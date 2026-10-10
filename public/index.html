@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="no">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cc-dash</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23d97757'/><path d='M4 5l3 3-3 3M8 11h4' stroke='white' stroke-width='1.6' fill='none'/></svg>">
+  <link rel="stylesheet" href="/vendor/xterm.css">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <header class="side-head">
+        <span class="brand">cc-dash</span>
+        <button id="new-btn" class="btn primary" title="Start en ny Claude-sesjon">+ Ny sesjon</button>
+      </header>
+      <input id="filter" class="filter" type="search" placeholder="Filtrer sesjoner…" autocomplete="off">
+      <nav id="session-list"></nav>
+      <footer id="side-foot"></footer>
+    </aside>
+
+    <main id="main">
+      <header id="main-head" hidden>
+        <div class="head-info">
+          <div id="head-title" class="head-title"></div>
+          <div id="head-meta" class="head-meta"></div>
+        </div>
+        <div class="head-actions">
+          <button id="panel-btn" class="btn" title="Vis/skjul panel (diff, filer, forhåndsvisning)">Panel</button>
+        </div>
+      </header>
+      <div id="workspace">
+        <section id="term-area">
+          <div id="empty" class="empty">
+            <h2>Velg en sesjon</h2>
+            <p>…eller start en ny med <b>+ Ny sesjon</b>.</p>
+          </div>
+          <div id="detail" class="detail" hidden></div>
+          <div id="terms"></div>
+          <div id="term-search" class="term-search" hidden>
+            <input id="search-input" type="search" placeholder="Søk i terminalen…" autocomplete="off" spellcheck="false">
+            <span id="search-count" class="search-count"></span>
+            <button id="search-prev" class="btn small" title="Forrige (Shift+Enter)">↑</button>
+            <button id="search-next" class="btn small" title="Neste (Enter)">↓</button>
+            <button id="search-close" class="btn small" title="Lukk (Esc)">×</button>
+          </div>
+        </section>
+        <div id="splitter" hidden></div>
+        <section id="panel" hidden>
+          <div class="tabs" role="tablist">
+            <button class="tab" data-tab="diff">Diff</button>
+            <button class="tab" data-tab="files">Filer</button>
+            <button class="tab" data-tab="preview">Forhåndsvisning</button>
+            <span class="spacer"></span>
+            <button id="panel-refresh" class="btn small" title="Oppdater">↻</button>
+          </div>
+          <div id="panel-body"></div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="new-dialog">
+    <form method="dialog" id="new-form">
+      <h3>Ny Claude-sesjon</h3>
+      <label for="new-cwd">Mappe</label>
+      <input id="new-cwd" required autocomplete="off" spellcheck="false" placeholder="/sti/til/prosjekt">
+      <div class="recent-label">Nylig brukte mapper</div>
+      <div id="recent-dirs" class="recent-dirs"></div>
+      <p id="new-error" class="error" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" value="cancel" id="new-cancel">Avbryt</button>
+        <button type="submit" class="btn primary" value="ok">Start</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
