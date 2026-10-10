@@ -65,11 +65,26 @@ function shortPath(p) {
 
 const STATE_LABEL = { working: 'jobber', waiting: 'venter på deg', idle: 'din tur', ended: 'avsluttet' };
 
+// How long a session has been waiting for the user: 0:42, 12:05, 1 t 20 min.
+function waited(t) {
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (s < 3600) return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  return `${Math.floor(s / 3600)} t ${Math.floor((s % 3600) / 60)} min`;
+}
+
 function stateHtml(s) {
   if (!s.state || s.state === 'ended') return '';
   const label = s.state === 'working' && s.stateDetail ? `jobber · ${s.stateDetail}` : STATE_LABEL[s.state];
-  return `<span class="state s-${s.state}"><span class="dot"></span>${esc(label)}</span>`;
+  const timer = (s.state === 'idle' || s.state === 'waiting') && s.stateAt
+    ? ` · <span class="since" data-since="${s.stateAt}" title="Har ventet på deg siden ${esc(new Date(s.stateAt).toLocaleTimeString())}">${waited(s.stateAt)}</span>`
+    : '';
+  return `<span class="state s-${s.state}"><span class="dot"></span>${esc(label)}${timer}</span>`;
 }
+
+// Tick the wait counters between polls so they count by the second.
+setInterval(() => {
+  for (const el of document.querySelectorAll('.since')) el.textContent = waited(Number(el.dataset.since));
+}, 1000);
 
 async function api(path, opts = {}) {
   const res = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) } });

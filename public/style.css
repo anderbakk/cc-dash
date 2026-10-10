@@ -142,6 +142,7 @@ button { font: inherit; color: inherit; }
 .s-waiting .dot { background: var(--waiting); }
 .s-idle { color: var(--idle); }
 .s-idle .dot { background: var(--idle); }
+.since { font-variant-numeric: tabular-nums; font-weight: 400; }
 @keyframes pulse { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .s-working .dot { animation: none; } }
 .kill {
