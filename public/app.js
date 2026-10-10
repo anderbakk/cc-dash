@@ -33,6 +33,7 @@ const state = {
   tab: store.get('tab', 'diff'),
   filesPath: {}, // session key -> current dir
   preview: null, // { key, path }
+  refsFilter: '',
   terms: new Map(), // managedId -> { term, fit, ws, el, exited }
   lastDiffAt: 0,
 };
@@ -512,6 +513,7 @@ async function renderPanel() {
   try {
     if (state.tab === 'diff') await renderDiff(s, body);
     else if (state.tab === 'files') await renderFiles(s, body);
+    else if (state.tab === 'refs') await renderRefs(s, body);
     else await renderPreview(s, body);
   } catch (e) {
     if (state.selected === key) body.innerHTML = `<div class="panel-msg error">${esc(e.message)}</div>`;
@@ -583,6 +585,62 @@ async function renderFiles(s, body) {
   body.innerHTML = html;
 }
 
+const REF_GROUPS = [
+  ['Pull requests', (r) => r.kind === 'pr'],
+  ['Issues og work items', (r) => r.kind === 'issue' || r.kind === 'workitem'],
+  ['Commits', (r) => r.kind === 'commit'],
+  ['Lenker', (r) => r.kind === 'url'],
+];
+const REF_SOURCE = { user: 'deg', claude: 'Claude', command: 'kommando' };
+const REF_KIND = { pr: 'PR', issue: 'Issue', workitem: 'Work item' };
+
+function refHtml(r) {
+  const link = (text, cls = '') => (r.url ? `<a class="ref-label ${cls}" href="${esc(r.url)}" target="_blank" rel="noopener">${text}</a>` : `<span class="ref-label ${cls}">${text}</span>`);
+  let main;
+  let sub = r.context;
+  let copy = r.url || r.label;
+  if (r.kind === 'commit') {
+    main = `${link(`<code>${esc(r.hash)}</code>`)} <span class="ref-text">${esc(r.label || '')}</span>`;
+    sub = r.branch ? `⎇ ${r.branch}` : r.context;
+    copy = r.hash;
+  } else if (r.kind === 'url') {
+    main = link(esc(r.label || r.url.replace(/^https?:\/\//, '')), r.label ? '' : 'mono');
+    if (r.label) sub = r.url;
+  } else {
+    main = `${link(`${REF_KIND[r.kind]} ${esc(r.label)}`)}${r.title ? ` <span class="ref-text">${esc(r.title)}</span>` : ''}`;
+  }
+  const when = `${REF_SOURCE[r.source] || ''}${r.lastAt ? ` · ${ago(r.lastAt)}` : ''}${r.count > 1 ? ` · ${r.count}×` : ''}`;
+  return `<div class="ref-row">
+    <div class="ref-main"><span class="grow">${main}</span><button class="btn small" data-copy="${esc(copy)}" title="Kopier ${esc(copy)}">Kopier</button></div>
+    <div class="ref-sub"><span class="grow" title="${esc(sub || '')}">${esc(sub || '')}</span><span>${esc(when)}</span></div>
+  </div>`;
+}
+
+function renderRefList(refs) {
+  const f = state.refsFilter.toLowerCase();
+  const match = (r) => !f || [r.label, r.title, r.url, r.context, r.hash, r.repo].some((v) => v && v.toLowerCase().includes(f));
+  let html = '';
+  for (const [label, test] of REF_GROUPS) {
+    const items = refs.filter((r) => test(r) && match(r));
+    if (items.length) html += `<div class="group-label ref-group">${label} <span>${items.length}</span></div>${items.map(refHtml).join('')}`;
+  }
+  if (html) return html;
+  return `<div class="panel-msg">${refs.length ? 'Ingen treff.' : 'Ingen lenker, PR-er, work items eller commits i denne samtalen ennå.'}</div>`;
+}
+
+async function renderRefs(s, body) {
+  const d = await api(`/api/sessions/${s.key}/refs`);
+  if (state.selected !== s.key || state.tab !== 'refs') return;
+  state.refs = d.refs;
+  // Keep the filter field (and its focus) when the list refreshes.
+  if (body.querySelector(`#refs-filter[data-key="${CSS.escape(s.key)}"]`)) {
+    $('#refs-list').innerHTML = renderRefList(d.refs);
+    return;
+  }
+  body.innerHTML = `<div class="crumbs"><input id="refs-filter" data-key="${esc(s.key)}" type="search" placeholder="Filtrer lenker, PR-er, work items, commits…" value="${esc(state.refsFilter)}" autocomplete="off" spellcheck="false"></div>
+    <div id="refs-list">${renderRefList(d.refs)}</div>`;
+}
+
 const ext = (p) => (p.match(/\.([^./]+)$/)?.[1] || '').toLowerCase();
 const IMAGE = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico']);
 
@@ -635,7 +693,21 @@ async function renderPreview(s, body) {
   });
 }
 
+$('#panel-body').addEventListener('input', (e) => {
+  if (e.target.id !== 'refs-filter') return;
+  state.refsFilter = e.target.value;
+  $('#refs-list').innerHTML = renderRefList(state.refs || []);
+});
+
 $('#panel-body').addEventListener('click', (e) => {
+  const copy = e.target.closest('[data-copy]');
+  if (copy) {
+    navigator.clipboard.writeText(copy.dataset.copy).then(() => {
+      copy.textContent = 'Kopiert ✓';
+      setTimeout(() => (copy.textContent = 'Kopier'), 1500);
+    });
+    return;
+  }
   const open = e.target.closest('[data-open]');
   const s = current();
   if (open && s) {
@@ -737,6 +809,8 @@ async function refresh() {
   if (state.panelOpen && state.tab === 'diff' && s && (s.lastAt !== prev?.lastAt || s.state !== prev?.state) && Date.now() - state.lastDiffAt > 3000) {
     renderPanel();
   }
+  // New messages may have new links.
+  if (state.panelOpen && state.tab === 'refs' && s && s.lastAt !== prev?.lastAt) renderPanel();
 }
 
 setPanel(state.panelOpen);

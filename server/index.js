@@ -9,8 +9,10 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { MAX_PREVIEW, gitDiff, listDir, mimeFor, safeResolve } from './files.js';
 import { PtyHost, TmuxHost } from './hosts.js';
+import { repoFor, resolveRefs } from './refs.js';
 import { CONFIG_FILE, DATA_DIR, IS_WIN, SETTINGS_FILE, safeId } from './paths.js';
 import { SessionManager } from './sessions.js';
+import { refsFor } from './transcripts.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
@@ -183,12 +185,18 @@ async function handle(req, res) {
     }
     if (p === '/api/dirs') return send(res, 200, { dirs: manager.recentDirs() });
 
-    const m = p.match(/^\/api\/sessions\/([^/]+)(?:\/(diff|files|file))?$/);
+    const m = p.match(/^\/api\/sessions\/([^/]+)(?:\/(diff|files|file|refs))?$/);
     if (m) {
       const [, id, action] = m;
       if (!safeId(id)) return send(res, 400, { error: 'Ugyldig id' });
       if (!action && req.method === 'DELETE') {
         return manager.kill(id) ? send(res, 200, { ok: true }) : send(res, 404, { error: 'Ikke funnet' });
+      }
+      if (action === 'refs') {
+        const refs = refsFor(id);
+        if (!refs) return send(res, 200, { refs: [], repo: null });
+        const repo = await repoFor(manager.cwdFor(id));
+        return send(res, 200, { refs: resolveRefs(refs, repo), repo });
       }
       const cwd = manager.cwdFor(id);
       if (!cwd || !fs.existsSync(cwd)) return send(res, 404, { error: 'Mappen til sesjonen finnes ikke' });

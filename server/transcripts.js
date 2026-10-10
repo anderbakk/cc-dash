@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PROJECTS_DIR } from './paths.js';
 import { costFor } from './pricing.js';
+import { extractRefs, newRefs } from './refs.js';
 
 const RECENT_DAYS = Number(process.env.CC_DASH_RECENT_DAYS || 14);
 const CHUNK = 1 << 20;
@@ -25,6 +26,8 @@ function newEntry(file, parent = null) {
     mtimeMs: 0,
     partial: '',
     msgIds: new Set(),
+    toolNames: new Map(), // tool_use id -> tool name, to know which results are Bash output
+    refs: parent ? null : newRefs(),
     data: {
       sessionId: path.basename(file, '.jsonl'),
       cwd: null,
@@ -57,6 +60,38 @@ function clip(s, n = 200) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
+function texts(content) {
+  if (typeof content === 'string') return [content];
+  if (!Array.isArray(content)) return [];
+  return content.filter((c) => c && c.type === 'text' && typeof c.text === 'string').map((c) => c.text);
+}
+
+// Collects links, PRs and commits (see refs.js). Only what you or Claude wrote
+// and command output; file contents and search results would drown it.
+function collectRefs(entry, o, at) {
+  const content = o.message?.content;
+  if (o.type === 'assistant') {
+    for (const t of texts(content)) extractRefs(entry.refs, t, 'claude', at);
+    if (!Array.isArray(content)) return;
+    for (const c of content) {
+      if (c?.type !== 'tool_use') continue;
+      entry.toolNames.set(c.id, c.name);
+      if (c.name === 'WebFetch' && typeof c.input?.url === 'string') extractRefs(entry.refs, c.input.url, 'claude', at);
+    }
+  } else if (o.type === 'user' && !o.isMeta) {
+    for (const t of texts(content)) extractRefs(entry.refs, t, 'user', at);
+    if (!Array.isArray(content)) return;
+    for (const c of content) {
+      if (c?.type !== 'tool_result') continue;
+      const name = entry.toolNames.get(c.tool_use_id);
+      entry.toolNames.delete(c.tool_use_id);
+      if (name !== 'Bash') continue;
+      const out = typeof c.content === 'string' ? [c.content] : texts(c.content);
+      for (const t of out) extractRefs(entry.refs, t, 'command', at);
+    }
+  }
+}
+
 function applyLine(entry, line) {
   let o;
   try {
@@ -75,6 +110,7 @@ function applyLine(entry, line) {
       if (!d.lastAt || t > d.lastAt) d.lastAt = t;
     }
   }
+  if (entry.refs) collectRefs(entry, o, o.timestamp ? Date.parse(o.timestamp) || null : null);
   switch (o.type) {
     case 'user': {
       if (o.isMeta || o.isSidechain || d.firstPrompt) break;
@@ -247,6 +283,13 @@ export function allTranscripts() {
     out.set(e.data.sessionId, summarize(e.data, subUsage.get(e.data.sessionId)));
   }
   return out;
+}
+
+// Links, PRs and commits mentioned in one session (not resolved, see refs.js).
+export function refsFor(sessionId) {
+  scanTranscripts();
+  for (const e of cache.values()) if (!e.parent && e.data.sessionId === sessionId) return e.refs;
+  return null;
 }
 
 // For tests: parse one file from scratch, including the raw cost-state.
