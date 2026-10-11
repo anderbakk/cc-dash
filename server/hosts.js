@@ -21,7 +21,16 @@ const SCROLLBACK_BYTES = 512 * 1024;
 
 // Variables Claude Code sets for its own child processes. If cc-dash itself is
 // started from inside a Claude session they must not leak into new sessions.
-const STRIP_ENV = ['CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SSE_PORT', 'CLAUDE_CODE_SESSION_ID'];
+// CLAUDE_CODE_CHILD_SESSION in particular turns transcript saving off, which
+// would leave every session cc-dash starts without a title, cost or --resume.
+const STRIP_ENV = [
+  'CLAUDECODE',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_SSE_PORT',
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_PID',
+];
 
 export function childEnv(extra = {}) {
   const env = { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor', ...extra };
@@ -41,11 +50,17 @@ export function claudeCommandLine(args) {
   return [base, ...args.map(quote)].join(' ');
 }
 
+// A fresh ConPTY console starts on the system OEM code page (850 in Norway),
+// so UTF-8 output from claude would be decoded as Latin-1: æøå and the box
+// drawing in the TUI turn to mojibake. Switch the console to UTF-8 first.
+// UTF8Encoding::new($false) = no BOM, unlike [Text.Encoding]::UTF8.
+const WIN_UTF8 = '[Console]::OutputEncoding=[Console]::InputEncoding=[Text.UTF8Encoding]::new($false)';
+
 // Returns [file, args] that run the claude command line in the user's shell.
 function shellInvocation(cmdline) {
   if (IS_WIN) {
     const shell = process.env.CC_DASH_SHELL || 'powershell.exe';
-    return [shell, ['-NoLogo', '-Command', `& ${cmdline}`]];
+    return [shell, ['-NoLogo', '-Command', `${WIN_UTF8}; & ${cmdline}`]];
   }
   const shell = process.env.CC_DASH_SHELL || process.env.SHELL || '/bin/bash';
   return [shell, ['-lc', `exec ${cmdline}`]];

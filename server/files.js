@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { IS_WIN } from './paths.js';
 
 const run = promisify(execFile);
 const MAX_DIFF = 2 * 1024 * 1024;
@@ -55,6 +56,11 @@ export async function gitDiff(cwd) {
   };
 }
 
+// Windows paths are case-insensitive, and the same folder can reach us with a
+// different drive-letter case depending on who wrote it down (transcript cwd,
+// realpath, the user typing it in). Compare accordingly.
+const key = (p) => (IS_WIN ? p.toLowerCase() : p);
+
 // Resolve `rel` inside `root`, refusing anything that escapes it (including via symlinks).
 export function safeResolve(root, rel = '') {
   const realRoot = fs.realpathSync(root);
@@ -65,7 +71,7 @@ export function safeResolve(root, rel = '') {
   } catch {
     return null;
   }
-  if (real !== realRoot && !real.startsWith(realRoot + path.sep)) return null;
+  if (key(real) !== key(realRoot) && !key(real).startsWith(key(realRoot) + path.sep)) return null;
   return real;
 }
 

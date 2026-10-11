@@ -16,3 +16,10 @@ export const STATE_FILE = path.join(DATA_DIR, 'state.json');
 export function safeId(id) {
   return typeof id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(id) ? id : null;
 }
+
+// JSON.parse chokes on a UTF-8 BOM, and Notepad, `Out-File -Encoding utf8` and
+// a good many editors put one in front of every file they save on Windows. Any
+// hand-editable JSON we read has to go through this first.
+export function stripBom(s) {
+  return s.charCodeAt(0) === 0xfeff ? s.slice(1) : s;
+}

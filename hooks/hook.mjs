@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { STATUS_DIR, safeId } from '../server/paths.js';
+import { readStdin } from './stdin.mjs';
 
 function stateFor(e) {
   switch (e.hook_event_name) {
@@ -28,7 +29,7 @@ function stateFor(e) {
 }
 
 try {
-  const e = JSON.parse(fs.readFileSync(0, 'utf8'));
+  const e = JSON.parse(readStdin());
   const id = safeId(e.session_id);
   const s = id && stateFor(e);
   if (s) {

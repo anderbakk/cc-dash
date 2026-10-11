@@ -5,24 +5,32 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CONFIG_FILE, DATA_DIR, SETTINGS_FILE } from '../server/paths.js';
+import { CONFIG_FILE, DATA_DIR, SETTINGS_FILE, stripBom } from '../server/paths.js';
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 // Forward slashes work for node on every platform and in every shell. The
 // --cc-dash marker lets us find our own entries again, wherever the repo lives.
 const MARK = '--cc-dash';
-const script = (name) => `node "${path.join(ROOT, 'hooks', name).split(path.sep).join('/')}" ${MARK}`;
+// Absolute path to the node running setup, not a bare `node`: the process
+// Claude Code starts hooks from often has a different PATH (Windows services,
+// nvm/fnm/asdf shims), and a hook that cannot start just fails silently.
+const NODE = process.execPath.split(path.sep).join('/');
+const script = (name) => `"${NODE}" "${path.join(ROOT, 'hooks', name).split(path.sep).join('/')}" ${MARK}`;
 const HOOK_CMD = script('hook.mjs');
 const STATUS_CMD = script('statusline.mjs');
-const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Notification', 'Stop', 'SessionEnd'];
-const TOOL_EVENTS = new Set(['PreToolUse', 'PostToolUse']);
+// PostToolUse is deliberately not installed. Every hook costs a node start —
+// about 220 ms on Windows — and it would double that for each tool call while
+// only clearing the tool name back out of the sidebar. PreToolUse already says
+// "working", and Stop clears it when the turn is over.
+const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'Notification', 'Stop', 'SessionEnd'];
+const TOOL_EVENTS = new Set(['PreToolUse']);
 
 const isOurs = (cmd) => typeof cmd === 'string' && cmd.includes('hook.mjs') && cmd.endsWith(MARK);
 const isOurStatus = (cmd) => typeof cmd === 'string' && cmd.includes('statusline.mjs') && cmd.endsWith(MARK);
 
 function readJson(file, fallback) {
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
+    return JSON.parse(stripBom(fs.readFileSync(file, 'utf8')));
   } catch (e) {
     if (e.code === 'ENOENT') return fallback;
     throw new Error(`Klarte ikke å lese ${file}: ${e.message}`);

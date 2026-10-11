@@ -28,7 +28,13 @@ npm install
 npm start          # opens http://127.0.0.1:7420/?token=…
 ```
 
-Requires Node 20+ and Claude Code (`claude` on PATH).
+Requires Node 20+ and Claude Code (`claude` on PATH). `git` must also be on
+PATH for the diff and file panels.
+
+On Windows, Claude Code is a native binary and does not bring Node with it, so
+install Node separately — `winget install OpenJS.NodeJS.LTS` — and open a new
+terminal afterwards so `node` is on PATH. Everything else is the same;
+PowerShell works, Git Bash and WSL are not needed.
 
 To see live status (working / waiting for you / your turn) in the sidebar,
 install the hooks once:
@@ -41,6 +47,10 @@ npm run setup:remove   # removes them again
 `setup` only touches its own entries, makes a backup
 (`settings.json.cc-dash-backup`), and if you already have a status line it keeps
 it: cc-dash's status line runs yours and shows its output.
+
+The entries point at the full path of the node that ran `setup`, since `node`
+is often missing from the PATH that hooks are started with. Run `npm run setup`
+again if you move the repo or switch Node version.
 
 ## How it works
 

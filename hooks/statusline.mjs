@@ -6,8 +6,9 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CONFIG_FILE, STATUS_DIR, safeId } from '../server/paths.js';
+import { readStdin } from './stdin.mjs';
 
-const input = fs.readFileSync(0, 'utf8');
+const input = readStdin();
 let data = {};
 try {
   data = JSON.parse(input);

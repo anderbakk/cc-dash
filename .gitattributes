@@ -1,0 +1,5 @@
+# Keep LF in the working tree everywhere: the hook scripts carry a shebang and
+# are run on Linux too, so a CRLF checkout on Windows must not leak into them.
+* text=auto eol=lf
+*.png binary
+*.ico binary

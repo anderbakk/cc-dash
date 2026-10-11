@@ -10,7 +10,7 @@ import { WebSocketServer } from 'ws';
 import { MAX_PREVIEW, gitDiff, listDir, mimeFor, safeResolve } from './files.js';
 import { PtyHost, TmuxHost } from './hosts.js';
 import { repoFor, resolveRefs } from './refs.js';
-import { CONFIG_FILE, DATA_DIR, IS_WIN, SETTINGS_FILE, safeId } from './paths.js';
+import { CONFIG_FILE, DATA_DIR, IS_WIN, SETTINGS_FILE, safeId, stripBom } from './paths.js';
 import { SessionManager } from './sessions.js';
 import { refsFor } from './transcripts.js';
 
@@ -29,7 +29,7 @@ function loadConfig() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   let cfg = {};
   try {
-    cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    cfg = JSON.parse(stripBom(fs.readFileSync(CONFIG_FILE, 'utf8')));
   } catch {}
   if (!cfg.token) {
     cfg.token = randomBytes(24).toString('base64url');
