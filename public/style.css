@@ -315,6 +315,17 @@ button { font: inherit; color: inherit; }
 .st-D { color: var(--del-fg); }
 
 .diff-head { padding: 8px 12px; color: var(--fg-dim); border-bottom: 1px solid var(--border); display: flex; gap: 10px; }
+.muted { color: var(--fg-dim); font-weight: normal; }
+
+/* A session's folders: one section per folder under Diff, chips under Files. */
+.root + .root { border-top: 2px solid var(--border); }
+.root-head { padding: 8px 12px; font-weight: 600; background: var(--bg-side); border-bottom: 1px solid var(--border); cursor: default; }
+details.root > summary.root-head { cursor: pointer; }
+.root-path { font-family: var(--mono); font-size: 11px; color: var(--fg-dim); font-weight: normal; margin-left: 6px; }
+.roots { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.chip { font: inherit; font-size: 12px; padding: 2px 10px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-elev); color: var(--fg); cursor: pointer; }
+.chip:hover { background: var(--bg-hover); }
+.chip.active { border-color: var(--accent); color: var(--accent); }
 .diff-file { border-bottom: 1px solid var(--border); }
 .diff-file summary {
   padding: 6px 12px;

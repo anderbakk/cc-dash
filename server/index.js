@@ -144,11 +144,12 @@ async function handle(req, res) {
 
   // Raw files for previews carry the token in the path, so relative links
   // inside a previewed HTML page (css, images) keep working in the iframe.
-  const raw = p.match(/^\/raw\/([^/]+)\/([^/]+)\/(.*)$/);
+  // /raw/<token>/<session>/<root id>/<path>
+  const raw = p.match(/^\/raw\/([^/]+)\/([^/]+)\/([^/]+)\/(.*)$/);
   if (raw && req.method === 'GET') {
     if (!tokenOk(raw[1])) return send(res, 401, { error: 'Ikke innlogget' });
-    const cwd = manager.cwdFor(raw[2]);
-    const file = cwd && safeResolve(cwd, decodeURIComponent(raw[3]));
+    const dir = await manager.rootDir(raw[2], raw[3]);
+    const file = dir && safeResolve(dir, decodeURIComponent(raw[4]));
     if (!file) return send(res, 404, { error: 'Ikke funnet' });
     return sendFile(res, file, { 'Content-Security-Policy': 'sandbox allow-scripts' });
   }
@@ -185,7 +186,7 @@ async function handle(req, res) {
     }
     if (p === '/api/dirs') return send(res, 200, { dirs: manager.recentDirs() });
 
-    const m = p.match(/^\/api\/sessions\/([^/]+)(?:\/(diff|files|file|refs))?$/);
+    const m = p.match(/^\/api\/sessions\/([^/]+)(?:\/(diff|files|file|refs|roots))?$/);
     if (m) {
       const [, id, action] = m;
       if (!safeId(id)) return send(res, 400, { error: 'Ugyldig id' });
@@ -198,7 +199,9 @@ async function handle(req, res) {
         const repo = await repoFor(manager.cwdFor(id));
         return send(res, 200, { refs: resolveRefs(refs, repo), repo });
       }
-      const cwd = manager.cwdFor(id);
+      if (action === 'roots') return send(res, 200, { roots: await manager.rootsFor(id) });
+      // Diff and files work on one of the session's folders, the cwd by default.
+      const cwd = await manager.rootDir(id, url.searchParams.get('root'));
       if (!cwd || !fs.existsSync(cwd)) return send(res, 404, { error: 'Mappen til sesjonen finnes ikke' });
       if (action === 'diff') return send(res, 200, await gitDiff(cwd));
       if (action === 'files') {

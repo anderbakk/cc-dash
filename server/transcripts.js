@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { PROJECTS_DIR } from './paths.js';
+import { addTargets, mergeTouched, newTouched, toolTargets } from './folders.js';
 import { costFor } from './pricing.js';
 import { extractRefs, newRefs } from './refs.js';
 
@@ -28,6 +29,7 @@ function newEntry(file, parent = null) {
     msgIds: new Set(),
     toolNames: new Map(), // tool_use id -> tool name, to know which results are Bash output
     refs: parent ? null : newRefs(),
+    touched: newTouched(), // folders used by tool calls, see folders.js
     data: {
       sessionId: path.basename(file, '.jsonl'),
       cwd: null,
@@ -101,7 +103,9 @@ function applyLine(entry, line) {
   }
   const d = entry.data;
   if (entry.parent && o.type !== 'assistant') return;
-  if (o.cwd) d.cwd = o.cwd;
+  // The first cwd is where the session was started. Later lines follow the
+  // shell into whatever folder Claude cd'ed to.
+  if (o.cwd && !d.cwd) d.cwd = o.cwd;
   if (o.gitBranch) d.gitBranch = o.gitBranch;
   if (o.timestamp) {
     const t = Date.parse(o.timestamp);
@@ -110,7 +114,9 @@ function applyLine(entry, line) {
       if (!d.lastAt || t > d.lastAt) d.lastAt = t;
     }
   }
-  if (entry.refs) collectRefs(entry, o, o.timestamp ? Date.parse(o.timestamp) || null : null);
+  const at = o.timestamp ? Date.parse(o.timestamp) || null : null;
+  if (entry.refs) collectRefs(entry, o, at);
+  if (o.type === 'assistant') addTargets(entry.touched, toolTargets(o.message?.content, o.cwd || d.cwd), at);
   switch (o.type) {
     case 'user': {
       if (o.isMeta || o.isSidechain || d.firstPrompt) break;
@@ -290,6 +296,16 @@ export function refsFor(sessionId) {
   scanTranscripts();
   for (const e of cache.values()) if (!e.parent && e.data.sessionId === sessionId) return e.refs;
   return null;
+}
+
+// Folders the session and its subagents used (not resolved, see folders.js).
+export function touchedFor(sessionId) {
+  scanTranscripts();
+  const list = [];
+  for (const e of cache.values()) {
+    if (e.parent ? e.parent === sessionId : e.data.sessionId === sessionId) list.push(e.touched);
+  }
+  return list.length ? mergeTouched(list) : null;
 }
 
 // For tests: parse one file from scratch, including the raw cost-state.

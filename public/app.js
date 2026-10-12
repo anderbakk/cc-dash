@@ -31,8 +31,11 @@ const state = {
   filter: '',
   panelOpen: store.get('panelOpen', false),
   tab: store.get('tab', 'diff'),
-  filesPath: {}, // session key -> current dir
-  preview: null, // { key, path }
+  roots: {}, // session key -> the folders it works in (cwd first), see folders.js
+  filesRoot: {}, // session key -> root id shown under Files
+  filesPath: {}, // `${session key}:${root id}` -> current dir
+  openRoots: new Set(), // `${session key}:${root id}` of read-only folders expanded under Diff
+  preview: null, // { key, root, path }
   refsFilter: '',
   terms: new Map(), // managedId -> { term, fit, ws, el, exited }
   lastDiffAt: 0,
@@ -96,7 +99,18 @@ async function api(path, opts = {}) {
 }
 
 const current = () => state.sessions.find((s) => s.key === state.selected) || null;
-const rawUrl = (key, p) => `/raw/${state.info.token}/${key}/${p.split('/').map(encodeURIComponent).join('/')}`;
+const rawUrl = (key, root, p) => `/raw/${state.info.token}/${key}/${root}/${p.split('/').map(encodeURIComponent).join('/')}`;
+
+async function loadRoots(s) {
+  const { roots } = await api(`/api/sessions/${s.key}/roots`);
+  const before = JSON.stringify(state.roots[s.key]);
+  state.roots[s.key] = roots;
+  if (before !== JSON.stringify(roots) && state.selected === s.key) renderHead(s);
+  return roots;
+}
+
+// Folders the session changed something in. The rest it only looked at.
+const changedIn = (r) => r.primary || r.writes > 0;
 
 // ---- sidebar ---------------------------------------------------------------
 
@@ -175,14 +189,19 @@ function select(key) {
   renderSidebar();
   renderMain();
   if (changed) renderPanel();
+  // For the header's "+ other folders", also when the panel is closed.
+  const s = current();
+  if (changed && s?.cwd && !state.panelOpen) loadRoots(s).catch(() => {});
 }
 
 function renderHead(s) {
   $('#main-head').hidden = !s;
   if (!s) return;
   $('#head-title').textContent = s.title || (s.running ? 'Ny sesjon' : '(uten tittel)');
+  const extra = (state.roots[s.key] || []).filter((r) => !r.primary && r.writes);
   const meta = [
     s.cwd && `<span class="path" title="${esc(s.cwd)}">${esc(shortPath(s.cwd))}</span>`,
+    extra.length && `<span title="Sesjonen har også endret filer i:\n${esc(extra.map((r) => r.path).join('\n'))}">+ ${esc(extra.map((r) => r.name).join(', '))}</span>`,
     s.gitBranch && `<span>⎇ ${esc(s.gitBranch)}</span>`,
     s.model && `<span>${esc(s.model)}</span>`,
     s.costUsd && `<span title="Beregnet fra tokenbruk i transkriptet (API-listepris)">${money(s.costUsd, s.costIncomplete)}</span>`,
@@ -520,18 +539,49 @@ async function renderPanel() {
   }
 }
 
+// One section per folder: those the session changed things in, then the ones
+// it only read from, collapsed (they may hold someone else's unrelated work).
 async function renderDiff(s, body) {
   state.lastDiffAt = Date.now();
-  const d = await api(`/api/sessions/${s.key}/diff`);
+  const roots = await loadRoots(s);
+  const isOpen = (r) => changedIn(r) || state.openRoots.has(`${s.key}:${r.id}`);
+  const diffs = await Promise.all(roots.map((r) => (r.git && isOpen(r) ? api(`/api/sessions/${s.key}/diff?root=${r.id}`) : null)));
   if (state.selected !== s.key || state.tab !== 'diff') return;
-  if (!d.repo) {
-    body.innerHTML = '<div class="panel-msg">Mappen er ikke et git-repo.</div>';
+  if (roots.length === 1) {
+    body.innerHTML = rootDiffHtml(roots[0], diffs[0]);
     return;
   }
-  if (!d.files.length) {
-    body.innerHTML = `<div class="diff-head">⎇ ${esc(d.branch)} · ingen endringer</div>`;
-    return;
+  let html = '';
+  roots.forEach((r, i) => {
+    const head = `${esc(r.name)}<span class="root-path">${esc(shortPath(r.path))}</span>`;
+    if (changedIn(r)) html += `<section class="root"><div class="root-head" title="${esc(r.path)}">${head}</div>${rootDiffHtml(r, diffs[i])}</section>`;
+    else {
+      html += `<details class="root" data-root-toggle="${esc(r.id)}"${isOpen(r) ? ' open' : ''}>
+        <summary class="root-head" title="${esc(r.path)}">${head} <span class="muted">· bare lest fra</span></summary>
+        ${isOpen(r) ? rootDiffHtml(r, diffs[i]) : ''}</details>`;
+    }
+  });
+  body.innerHTML = html;
+}
+
+// data-root tells the click handler which folder the paths inside belong to.
+function rootDiffHtml(r, d) {
+  return `<div data-root="${esc(r.id)}">${r.git ? diffHtml(d) : writtenHtml(r)}</div>`;
+}
+
+// A folder without git: the files the session wrote there, newest first.
+function writtenHtml(r) {
+  const files = r.written || [];
+  let html = `<div class="diff-head">Ikke et git-repo${files.length ? ` · ${files.length} ${files.length === 1 ? 'fil' : 'filer'} endret i denne sesjonen` : ''}</div>`;
+  for (const f of files) {
+    html += `<button class="file-row" data-open="${esc(f.path)}"><span class="icon"></span><span class="grow">${esc(f.path)}</span><span class="badge">${ago(f.at)}</span></button>`;
   }
+  return html;
+}
+
+function diffHtml(d) {
+  if (!d.repo) return '<div class="panel-msg">Mappen er ikke et git-repo.</div>';
+  if (!d.files.length) return `<div class="diff-head">⎇ ${esc(d.branch)} · ingen endringer</div>`;
   const untracked = d.files.filter((f) => f.status === '??');
   const blocks = d.diff.split(/^(?=diff --git )/m).filter((b) => b.startsWith('diff --git'));
   let html = `<div class="diff-head">⎇ ${esc(d.branch)} · ${d.files.length} filer endret</div>`;
@@ -564,17 +614,23 @@ async function renderDiff(s, body) {
       html += `<button class="file-row" data-open="${esc(toCwd(f.path))}"><span class="st st-??">??</span><span class="grow">${esc(f.path)}</span></button>`;
     }
   }
-  body.innerHTML = html;
+  return html;
 }
 
 async function renderFiles(s, body) {
-  const dir = state.filesPath[s.key] || '';
-  const d = await api(`/api/sessions/${s.key}/files?path=${encodeURIComponent(dir)}`);
+  const roots = await loadRoots(s);
+  const root = roots.find((r) => r.id === state.filesRoot[s.key]) || roots[0];
+  const dir = state.filesPath[`${s.key}:${root.id}`] || '';
+  const d = await api(`/api/sessions/${s.key}/files?root=${root.id}&path=${encodeURIComponent(dir)}`);
   if (state.selected !== s.key || state.tab !== 'files') return;
   const parts = d.path ? d.path.split('/') : [];
   let crumbs = `<a data-dir="">${esc(shortPath(d.cwd).split(/[\\/]/).pop() || d.cwd)}</a>`;
   parts.forEach((p, i) => (crumbs += ` / <a data-dir="${esc(parts.slice(0, i + 1).join('/'))}">${esc(p)}</a>`));
-  let html = `<div class="crumbs">${crumbs}</div>`;
+  let html = '';
+  if (roots.length > 1) {
+    html += `<div class="roots">${roots.map((r) => `<button class="chip${r.id === root.id ? ' active' : ''}" data-pick-root="${esc(r.id)}" title="${esc(r.path)}">${esc(r.name)}${changedIn(r) ? '' : ' <span class="muted">(lest)</span>'}</button>`).join('')}</div>`;
+  }
+  html += `<div data-root="${esc(root.id)}"><div class="crumbs">${crumbs}</div>`;
   if (d.path) html += `<button class="file-row" data-dir="${esc(parts.slice(0, -1).join('/'))}"><span class="icon">↑</span><span class="grow">..</span></button>`;
   for (const e of d.entries) {
     const p = d.path ? `${d.path}/${e.name}` : e.name;
@@ -582,7 +638,7 @@ async function renderFiles(s, body) {
       ? `<button class="file-row" data-dir="${esc(p)}"><span class="icon">▸</span><span class="grow">${esc(e.name)}/</span></button>`
       : `<button class="file-row" data-open="${esc(p)}"><span class="icon"></span><span class="grow">${esc(e.name)}</span></button>`;
   }
-  body.innerHTML = html;
+  body.innerHTML = html + '</div>';
 }
 
 const REF_GROUPS = [
@@ -660,11 +716,12 @@ async function renderPreview(s, body) {
     body.innerHTML = '<div class="panel-msg">Velg en fil under <b>Filer</b> eller <b>Diff</b> for å forhåndsvise den.</div>';
     return;
   }
-  const url = rawUrl(s.key, pv.path);
+  const url = rawUrl(s.key, pv.root, pv.path);
   const e = ext(pv.path);
   const isMd = e === 'md' || e === 'markdown';
   const isHtml = e === 'html' || e === 'htm';
-  const bar = `<div class="preview-bar"><span class="grow">${esc(pv.path)}</span>
+  const rootName = pv.root !== 'main' && (state.roots[s.key] || []).find((r) => r.id === pv.root)?.name;
+  const bar = `<div class="preview-bar"><span class="grow">${rootName ? `${esc(rootName)} / ` : ''}${esc(pv.path)}</span>
     ${isMd || isHtml ? `<button class="btn small" id="src-btn">${pv.source ? 'Vis rendret' : 'Vis kilde'}</button>` : ''}
     <a href="${esc(url)}" target="_blank" rel="noopener">Åpne i ny fane ↗</a></div>`;
 
@@ -675,12 +732,12 @@ async function renderPreview(s, body) {
   } else if (e === 'pdf') {
     body.innerHTML = `${bar}<div class="panel-msg">PDF åpnes best i ny fane.</div>`;
   } else {
-    const text = await api(`/api/sessions/${s.key}/file?path=${encodeURIComponent(pv.path)}`).then((t) => (typeof t === 'string' ? t : JSON.stringify(t, null, 2)));
+    const text = await api(`/api/sessions/${s.key}/file?root=${pv.root}&path=${encodeURIComponent(pv.path)}`).then((t) => (typeof t === 'string' ? t : JSON.stringify(t, null, 2)));
     if (state.selected !== s.key || state.tab !== 'preview') return;
     if (isMd && !pv.source) {
       // Rendered without scripts; <base> makes relative images resolve to the session's files.
       const dir = pv.path.includes('/') ? pv.path.slice(0, pv.path.lastIndexOf('/') + 1) : '';
-      const doc = `<!doctype html><meta charset="utf-8"><base href="${esc(location.origin + rawUrl(s.key, dir || '.') + (dir ? '' : '/'))}" target="_blank">${MD_STYLE}${marked.parse(text)}`;
+      const doc = `<!doctype html><meta charset="utf-8"><base href="${esc(location.origin + rawUrl(s.key, pv.root, dir || '.') + (dir ? '' : '/'))}" target="_blank">${MD_STYLE}${marked.parse(text)}`;
       body.innerHTML = `${bar}<iframe class="preview-frame" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>`;
       body.querySelector('iframe').srcdoc = doc;
     } else {
@@ -708,19 +765,38 @@ $('#panel-body').addEventListener('click', (e) => {
     });
     return;
   }
-  const open = e.target.closest('[data-open]');
   const s = current();
+  const pick = e.target.closest('[data-pick-root]');
+  if (pick && s) {
+    state.filesRoot[s.key] = pick.dataset.pickRoot;
+    return renderPanel();
+  }
+  const root = e.target.closest('[data-root]')?.dataset.root || 'main';
+  const open = e.target.closest('[data-open]');
   if (open && s) {
     e.preventDefault();
-    state.preview = { key: s.key, path: open.dataset.open, source: false };
+    state.preview = { key: s.key, root, path: open.dataset.open, source: false };
     return setTab('preview');
   }
   const dir = e.target.closest('[data-dir]');
   if (dir && s) {
-    state.filesPath[s.key] = dir.dataset.dir;
+    state.filesPath[`${s.key}:${root}`] = dir.dataset.dir;
     renderPanel();
   }
 });
+
+// Read-only folders under Diff load their diff when expanded. `toggle` does
+// not bubble, hence the capture.
+$('#panel-body').addEventListener('toggle', (e) => {
+  const r = e.target.dataset?.rootToggle;
+  const s = current();
+  if (!r || !s) return;
+  const k = `${s.key}:${r}`;
+  if (e.target.open === state.openRoots.has(k)) return; // set by our own render
+  if (e.target.open) state.openRoots.add(k);
+  else state.openRoots.delete(k);
+  if (e.target.open) renderPanel();
+}, true);
 
 // Resizable panel.
 (() => {

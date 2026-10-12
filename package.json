@@ -11,7 +11,7 @@
     "start": "node server/index.js",
     "setup": "node scripts/setup.js",
     "setup:remove": "node scripts/setup.js --remove",
-    "test": "node --test test/"
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20"

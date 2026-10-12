@@ -6,7 +6,8 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, STATE_FILE, STATUS_DIR, safeId } from './paths.js';
-import { allTranscripts } from './transcripts.js';
+import { sessionRoots } from './folders.js';
+import { allTranscripts, touchedFor } from './transcripts.js';
 
 const EXTERNAL_LIVE_MS = 24 * 3600e3; // hook status older than this is treated as stale
 const MAX_RECENT = 60;
@@ -91,6 +92,17 @@ export class SessionManager {
   cwdFor(key) {
     for (const s of this.managed.values()) if (s.claudeSessionId === key) return s.cwd;
     return allTranscripts().get(key)?.cwd || null;
+  }
+
+  // Every folder the session works in, its cwd first (see folders.js).
+  rootsFor(key) {
+    return sessionRoots(this.cwdFor(key), touchedFor(key));
+  }
+
+  // The folder behind a root id, for diff/files. 'main' (or none) is the cwd.
+  async rootDir(key, id) {
+    if (!id || id === 'main') return this.cwdFor(key);
+    return (await this.rootsFor(key)).find((r) => r.id === id)?.path || null;
   }
 
   list() {
