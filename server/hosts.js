@@ -38,16 +38,37 @@ export function childEnv(extra = {}) {
   return env;
 }
 
-// Quote one argument for the shell that will run the claude command line.
-function quote(arg) {
-  if (/^[A-Za-z0-9_\-./:=@]+$/.test(arg)) return arg;
-  if (IS_WIN) return `'${arg.replace(/'/g, "''")}'`; // PowerShell
-  return `'${arg.replace(/'/g, `'\\''`)}'`;
+// node-pty on Windows only finds a bare name on PATH if it has its extension
+// ("powershell.exe" works, "pwsh" does not). Resolve it the way a shell would,
+// and fail with a message that says which shell is missing.
+export function resolveShell(shell) {
+  if (!IS_WIN || /[\\/]/.test(shell)) return shell;
+  const exts = path.extname(shell) ? [''] : (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';');
+  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+    for (const ext of exts) {
+      const full = path.join(dir, shell + ext);
+      if (dir && fs.existsSync(full)) return full;
+    }
+  }
+  throw new Error(`Fant ikke skallet «${shell}» på PATH`);
 }
 
-export function claudeCommandLine(args) {
-  const base = process.env.CC_DASH_CLAUDE_CMD || 'claude';
-  return [base, ...args.map(quote)].join(' ');
+export const defaultShell = () =>process.env.CC_DASH_SHELL || (IS_WIN ? 'powershell.exe' : process.env.SHELL || '/bin/bash');
+
+// The three families of shell we know how to drive.
+export function shellKind(shell) {
+  const name = path.basename(shell).toLowerCase().replace(/\.exe$/, '');
+  if (name === 'pwsh' || name === 'powershell') return 'ps';
+  if (name === 'cmd') return 'cmd';
+  return 'posix';
+}
+
+// Quote one argument for the shell that will run the claude command line.
+function quote(arg, kind) {
+  if (/^[A-Za-z0-9_\-./:=@]+$/.test(arg)) return arg;
+  if (kind === 'ps') return `'${arg.replace(/'/g, "''")}'`;
+  if (kind === 'cmd') return `"${arg.replace(/"/g, '""')}"`;
+  return `'${arg.replace(/'/g, `'\\''`)}'`;
 }
 
 // A fresh ConPTY console starts on the system OEM code page (850 in Norway),
@@ -56,14 +77,26 @@ export function claudeCommandLine(args) {
 // UTF8Encoding::new($false) = no BOM, unlike [Text.Encoding]::UTF8.
 const WIN_UTF8 = '[Console]::OutputEncoding=[Console]::InputEncoding=[Text.UTF8Encoding]::new($false)';
 
-// Returns [file, args] that run the claude command line in the user's shell.
-function shellInvocation(cmdline) {
-  if (IS_WIN) {
-    const shell = process.env.CC_DASH_SHELL || 'powershell.exe';
-    return [shell, ['-NoLogo', '-Command', `${WIN_UTF8}; & ${cmdline}`]];
+// Returns [file, args] for a session's launch spec (see profiles.js): the
+// shell runs `init` first, then either claude with `args` or, for a plain
+// terminal, stays open at its prompt. The shell's own profile/rc is loaded,
+// so functions defined there (like a login helper) can be used as `init`.
+export function launchCommand({ shell, init, command, claude, args = [] }) {
+  shell ||= defaultShell();
+  const kind = shellKind(shell);
+  const cmdline = claude ? [command || process.env.CC_DASH_CLAUDE_CMD || 'claude', ...args.map((a) => quote(a, kind))].join(' ') : null;
+  if (kind === 'ps') {
+    const steps = [WIN_UTF8, init, cmdline && `& ${cmdline}`].filter(Boolean).join('; ');
+    return [shell, ['-NoLogo', ...(claude ? [] : ['-NoExit']), '-Command', steps]];
   }
-  const shell = process.env.CC_DASH_SHELL || process.env.SHELL || '/bin/bash';
-  return [shell, ['-lc', `exec ${cmdline}`]];
+  if (kind === 'cmd') {
+    const steps = ['chcp 65001 >nul', init, cmdline].filter(Boolean).join(' & ');
+    return [shell, [claude ? '/C' : '/K', steps]];
+  }
+  if (claude) return [shell, ['-lc', [init, `exec ${cmdline}`].filter(Boolean).join('; ')]];
+  // A plain shell after init: exec a fresh login shell. Exported variables
+  // carry over; functions and aliases defined by init do not.
+  return init ? [shell, ['-lc', `${init}; exec ${quote(shell, kind)} -l`]] : [shell, ['-l']];
 }
 
 export class PtyHost {
@@ -75,13 +108,13 @@ export class PtyHost {
   }
 
   start(sess) {
-    const [file, args] = shellInvocation(claudeCommandLine(sess.args));
-    const p = pty.spawn(file, args, {
+    const [file, args] = launchCommand(sess.launch);
+    const p = pty.spawn(resolveShell(file), args, {
       name: 'xterm-256color',
       cols: 120,
       rows: 40,
       cwd: sess.cwd,
-      env: childEnv({ CC_DASH_SESSION: sess.id }),
+      env: childEnv({ ...sess.launch.env, CC_DASH_SESSION: sess.id }),
     });
     const proc = { pty: p, chunks: [], bytes: 0, listeners: new Set(), exitListeners: new Set(), alive: true };
     p.onData((d) => {
@@ -193,10 +226,10 @@ export class TmuxHost {
   }
 
   start(sess) {
-    const [file, args] = shellInvocation(claudeCommandLine(sess.args));
+    const [file, args] = launchCommand(sess.launch);
     const cmd = [file, ...args].map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(' ');
-    this.#tmux(['new-session', '-d', '-s', this.#target(sess), '-x', '120', '-y', '40', '-c', sess.cwd,
-      '-e', `CC_DASH_SESSION=${sess.id}`, cmd]);
+    const env = Object.entries({ ...sess.launch.env, CC_DASH_SESSION: sess.id }).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
+    this.#tmux(['new-session', '-d', '-s', this.#target(sess), '-x', '120', '-y', '40', '-c', sess.cwd, ...env, cmd]);
     this.#live.at = 0;
   }
 

@@ -52,6 +52,44 @@ The entries point at the full path of the node that ran `setup`, since `node`
 is often missing from the PATH that hooks are started with. Run `npm run setup`
 again if you move the repo or switch Node version.
 
+## Profiles
+
+"+ Ny sesjon" starts a session from a profile. Out of the box there are two:
+**Claude** and **Terminal** (a plain shell, no Claude). Add your own under
+`profiles` in `~/.cc-dash/config.json`; your list replaces the defaults, so
+keep the two if you want them:
+
+```json
+"profiles": [
+  { "name": "Claude" },
+  { "name": "Terminal", "command": null },
+  { "name": "Work + Claude", "shell": "pwsh", "init": "Use-WorkTenant", "tag": "WORK", "color": "red" },
+  { "name": "Work", "shell": "pwsh", "init": "Use-WorkTenant", "command": null, "tag": "WORK", "color": "red" },
+  { "name": "Python", "init": "source .venv/bin/activate", "command": null, "cwd": "~/src/app" }
+]
+```
+
+| Field | | Default |
+|---|---|---|
+| `name` | shown in the UI | required |
+| `shell` | shell that runs everything | `CC_DASH_SHELL`, else `powershell.exe` / `$SHELL` |
+| `init` | command run in that shell first; functions from your shell profile work | none |
+| `command` | the command that starts Claude; `null` gives a plain shell | `claude` |
+| `env` | extra environment variables | none |
+| `cwd` | folder filled in when the profile is picked | none |
+| `tag` | short label on its sessions, e.g. `"PROD"` | none |
+| `color` | color of the tag and a stripe on its sessions: `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `pink`, `gray` or a hex code | `gray` when `tag` is set |
+
+Changes apply right away, no restart needed. When you continue a session with
+"Fortsett her", the profile it was started with is used again, and you can
+pick another one. A plain terminal has no transcript: it shows under "Kjører
+her" while it is open and is gone once you exit it. With a POSIX shell,
+variables exported by `init` carry over into the plain shell, but functions
+and aliases it defines do not.
+
+Profiles can only be defined in the config file, not through the web UI or
+API, so a page that got hold of the token cannot add a command of its own.
+
 ## How it works
 
 ```
@@ -103,7 +141,7 @@ browser. For remote access, use e.g. Tailscale or an SSH tunnel.
 | `HOST` | `127.0.0.1` | |
 | `CC_DASH_NO_OPEN` | | don't open the browser automatically (or `--no-open`) |
 | `CC_DASH_HOST` | auto | `pty` forces node-pty even when tmux is available |
-| `CC_DASH_SHELL` | `powershell.exe` / `$SHELL` | shell that starts claude |
+| `CC_DASH_SHELL` | `powershell.exe` / `$SHELL` | shell for profiles that don't set `shell` |
 | `CC_DASH_CLAUDE_CMD` | `claude` | command to start |
 | `CC_DASH_RECENT_DAYS` | `14` | how far back transcripts are read |
 | `CC_DASH_DIR` | `~/.cc-dash` | cc-dash's own files |

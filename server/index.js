@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { MAX_PREVIEW, gitDiff, listDir, mimeFor, safeResolve } from './files.js';
 import { PtyHost, TmuxHost } from './hosts.js';
+import { loadProfiles, pickProfile } from './profiles.js';
 import { repoFor, resolveRefs } from './refs.js';
 import { CONFIG_FILE, DATA_DIR, IS_WIN, SETTINGS_FILE, safeId, stripBom } from './paths.js';
 import { SessionManager } from './sessions.js';
@@ -177,11 +178,21 @@ async function handle(req, res) {
         platform: process.platform,
         hooks: hooksInstalled(),
         token: config.token,
+        profiles: loadProfiles().map(({ id, name, claude, cwd, tag, color }) => ({ id, name, claude, cwd: cwd || null, tag: tag || null, color: color || null })),
       });
     }
     if (p === '/api/sessions' && req.method === 'POST') {
       const body = await readJson(req);
-      const sess = manager.create({ cwd: body.cwd, resumeId: body.resumeId });
+      // Continuing a session uses the profile it was started with, if known.
+      const wanted = body.profile || (body.resumeId && manager.rememberedProfile(body.resumeId));
+      let profile;
+      try {
+        profile = pickProfile(wanted, { claude: !!body.resumeId });
+      } catch (e) {
+        if (body.profile || !body.resumeId) throw e;
+        profile = pickProfile(null, { claude: true }); // remembered profile was removed from config
+      }
+      const sess = manager.create({ cwd: body.cwd, resumeId: body.resumeId, profile });
       return send(res, 201, { managedId: sess.id, key: sess.claudeSessionId });
     }
     if (p === '/api/dirs') return send(res, 200, { dirs: manager.recentDirs() });

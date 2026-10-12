@@ -36,6 +36,7 @@ const state = {
   filesPath: {}, // `${session key}:${root id}` -> current dir
   openRoots: new Set(), // `${session key}:${root id}` of read-only folders expanded under Diff
   preview: null, // { key, root, path }
+  resumeProfile: {}, // session key -> profile id picked for "Fortsett her"
   refsFilter: '',
   terms: new Map(), // managedId -> { term, fit, ws, el, exited }
   lastDiffAt: 0,
@@ -67,7 +68,33 @@ function shortPath(p) {
   return p.replace(/^\/home\/[^/]+|^\/Users\/[^/]+|^[A-Za-z]:\\Users\\[^\\]+/, '~');
 }
 
-const STATE_LABEL = { working: 'jobber', waiting: 'venter på deg', idle: 'din tur', ended: 'avsluttet' };
+const profiles = () => state.info.profiles || [];
+
+const profileOf = (s) => (s?.profileId && profiles().find((x) => x.id === s.profileId)) || null;
+
+// The color of a session's profile tag, as a CSS value (see --tag-* in style.css).
+function tagColor(s) {
+  const p = profileOf(s);
+  if (!p?.tag && !p?.color) return null;
+  const c = p.color || 'gray';
+  return c.startsWith('#') ? c : `var(--tag-${c})`;
+}
+
+// For an element that should carry the profile's color stripe.
+const tagAttrs = (s) => (tagColor(s) ? ` tagged" style="--tag:${esc(tagColor(s))}` : '');
+
+// Marks the profile's tag, plain terminals, and Claude sessions started with
+// another profile than the default one.
+function profileBadge(s) {
+  const p = profileOf(s);
+  let html = '';
+  if (p?.tag) html += `<span class="profile tagged" style="--tag:${esc(tagColor(s))}" title="Profil: ${esc(p.name)}">${esc(p.tag)}</span>`;
+  else if (p && !s.shell && p !== profiles().find((x) => x.claude)) html += `<span class="profile">${esc(p.name)}</span>`;
+  if (s.shell) html += '<span class="profile">terminal</span>';
+  return html;
+}
+
+const STATE_LABEL ={ working: 'jobber', waiting: 'venter på deg', idle: 'din tur', ended: 'avsluttet' };
 
 // How long a session has been waiting for the user: 0:42, 12:05, 1 t 20 min.
 function waited(t) {
@@ -129,9 +156,9 @@ function renderSidebar() {
     html += `<div class="group-label">${label}</div>`;
     for (const s of items) {
       const title = s.title || (s.running ? 'Ny sesjon' : '(uten tittel)');
-      html += `<div class="item${s.key === state.selected ? ' selected' : ''}" data-key="${esc(s.key)}" role="button" tabindex="0">
+      html += `<div class="item${s.key === state.selected ? ' selected' : ''}${tagAttrs(s)}" data-key="${esc(s.key)}" role="button" tabindex="0">
         <div class="item-title" title="${esc(title)}">${esc(title)}</div>
-        <div class="item-meta"><span class="grow" title="${esc(s.cwd)}">${esc(s.project || '')}${s.gitBranch ? ` · ${esc(s.gitBranch)}` : ''}</span><span class="cost">${money(s.costUsd, s.costIncomplete)}</span></div>
+        <div class="item-meta"><span class="grow" title="${esc(s.cwd)}">${profileBadge(s)}${esc(s.project || '')}${s.gitBranch ? ` · ${esc(s.gitBranch)}` : ''}</span><span class="cost">${money(s.costUsd, s.costIncomplete)}</span></div>
         <div class="item-sub"><span class="grow">${stateHtml(s) || esc(s.lastPrompt || '')}</span><span>${ago(s.lastAt)}</span></div>
         ${s.running ? `<button class="kill" data-kill="${esc(s.managedId)}" title="Avslutt sesjonen">×</button>` : ''}
       </div>`;
@@ -197,10 +224,14 @@ function select(key) {
 function renderHead(s) {
   $('#main-head').hidden = !s;
   if (!s) return;
+  const color = tagColor(s);
+  $('#main-head').classList.toggle('tagged', !!color);
+  if (color) $('#main-head').style.setProperty('--tag', color);
   $('#head-title').textContent = s.title || (s.running ? 'Ny sesjon' : '(uten tittel)');
   const extra = (state.roots[s.key] || []).filter((r) => !r.primary && r.writes);
   const meta = [
-    s.cwd && `<span class="path" title="${esc(s.cwd)}">${esc(shortPath(s.cwd))}</span>`,
+    profileBadge(s),
+    s.cwd &&`<span class="path" title="${esc(s.cwd)}">${esc(shortPath(s.cwd))}</span>`,
     extra.length && `<span title="Sesjonen har også endret filer i:\n${esc(extra.map((r) => r.path).join('\n'))}">+ ${esc(extra.map((r) => r.name).join(', '))}</span>`,
     s.gitBranch && `<span>⎇ ${esc(s.gitBranch)}</span>`,
     s.model && `<span>${esc(s.model)}</span>`,
@@ -232,6 +263,12 @@ function renderMain() {
 
 function renderDetail(s) {
   const canResume = s.cwd && !s.external;
+  // Continue with the profile it was started with, unless picked otherwise.
+  const claudeProfiles = profiles().filter((p) => p.claude);
+  const chosen = [state.resumeProfile[s.key], s.profileId].find((id) => claudeProfiles.some((p) => p.id === id)) || claudeProfiles[0]?.id;
+  const picker = claudeProfiles.length > 1 && (canResume || s.external)
+    ? `<select id="resume-profile" class="profile-select" title="Profil">${claudeProfiles.map((p) => `<option value="${esc(p.id)}"${p.id === chosen ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`
+    : '';
   $('#detail').innerHTML = `
     <h2>${esc(s.title || '(uten tittel)')}</h2>
     ${s.lastPrompt ? `<div class="prompt">${esc(s.lastPrompt)}</div>` : ''}
@@ -243,11 +280,13 @@ function renderDetail(s) {
       ${s.startedAt ? `<dt>Startet</dt><dd>${new Date(s.startedAt).toLocaleString()}</dd>` : ''}
       ${s.lastAt ? `<dt>Sist aktiv</dt><dd>${new Date(s.lastAt).toLocaleString()}</dd>` : ''}
     </dl>
-    ${canResume ? `<button class="btn primary" id="resume-btn">Fortsett her (claude --resume)</button>` : ''}
+    ${canResume ? `${picker}<button class="btn primary" id="resume-btn">Fortsett her (claude --resume)</button>` : ''}
     ${s.external ? `<p class="note">Denne sesjonen kjører i en annen terminal. Lukk den der først hvis du vil fortsette den her, så ikke to prosesser jobber i samme sesjon.</p>
-      <button class="btn" id="resume-btn">Fortsett her likevel</button>` : ''}
+      ${picker}<button class="btn" id="resume-btn">Fortsett her likevel</button>` : ''}
   `;
-  $('#resume-btn')?.addEventListener('click', () => startSession({ cwd: s.cwd, resumeId: s.key }));
+  // The detail view is redrawn on every poll; keep the pick.
+  $('#resume-profile')?.addEventListener('change', (e) => (state.resumeProfile[s.key] = e.target.value));
+  $('#resume-btn')?.addEventListener('click', () => startSession({ cwd: s.cwd, resumeId: s.key, profile: $('#resume-profile')?.value }));
 }
 
 function alertBox(msg) {
@@ -470,7 +509,14 @@ $('#new-btn').addEventListener('click', async () => {
   const dlg = $('#new-dialog');
   $('#new-error').hidden = true;
   const cur = current();
-  $('#new-cwd').value = cur?.cwd || '';
+  const sel = $('#new-profile');
+  const last = store.get('profile', null);
+  sel.innerHTML = profiles()
+    .map((p) => `<option value="${esc(p.id)}"${p.id === last ? ' selected' : ''}>${esc(p.name)}${p.claude ? '' : ' (terminal)'}</option>`)
+    .join('');
+  const prof = profiles().find((p) => p.id === sel.value);
+  $('#new-cwd').value = prof?.cwd || cur?.cwd || '';
+  markProfileSelect();
   $('#recent-dirs').innerHTML = '';
   dlg.showModal();
   $('#new-cwd').select();
@@ -487,10 +533,27 @@ $('#recent-dirs').addEventListener('click', (e) => {
 $('#recent-dirs').addEventListener('dblclick', (e) => {
   if (e.target.closest('[data-dir]')) $('#new-form').requestSubmit();
 });
+// The picker takes the color of a tagged profile, so it is clear which one
+// you are about to start.
+function markProfileSelect() {
+  const sel = $('#new-profile');
+  const color = tagColor({ profileId: sel.value });
+  sel.classList.toggle('tagged', !!color);
+  sel.style.setProperty('--tag', color || '');
+}
+
+// A profile with its own folder fills it in.
+$('#new-profile').addEventListener('change', (e) => {
+  const p = profiles().find((x) => x.id === e.target.value);
+  if (p?.cwd) $('#new-cwd').value = p.cwd;
+  markProfileSelect();
+});
 $('#new-cancel').addEventListener('click', () => $('#new-dialog').close());
 $('#new-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const r = await startSession({ cwd: $('#new-cwd').value.trim() });
+  const profile = $('#new-profile').value || undefined;
+  store.set('profile', profile);
+  const r = await startSession({ cwd: $('#new-cwd').value.trim(), profile });
   if (r === true) $('#new-dialog').close();
   else {
     $('#new-error').textContent = r;
@@ -868,7 +931,7 @@ async function refresh() {
   }
   const prev = current();
   state.sessions = data.sessions;
-  state.info = { host: data.host, platform: data.platform, hooks: data.hooks, token: data.token };
+  state.info = { host: data.host, platform: data.platform, hooks: data.hooks, token: data.token, profiles: data.profiles };
   watchStates(state.sessions);
 
   // Drop terminals for sessions that are gone.
