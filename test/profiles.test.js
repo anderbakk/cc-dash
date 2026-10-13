@@ -32,8 +32,8 @@ test('user profiles replace the defaults; bad ones are skipped', () => {
   assert.deepEqual(ps[1].env, { A: '1' });
   assert.equal(pickProfile('work').claude, false);
   assert.equal(pickProfile(null, { claude: true }).id, 'work-claude');
-  assert.throws(() => pickProfile('work', { claude: true }), /starter ikke Claude/);
-  assert.throws(() => pickProfile('nope'), /Ukjent profil/);
+  assert.throws(() => pickProfile('work', { claude: true }), /does not start Claude/);
+  assert.throws(() => pickProfile('nope'), /Unknown profile/);
 });
 
 test('tag and color; a bad color is dropped, not the profile', () => {

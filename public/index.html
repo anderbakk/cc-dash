@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="no">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -9,14 +9,15 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+  <!-- Texts are filled in from i18n.js (data-i18n*). -->
   <div id="app">
     <aside id="sidebar">
       <header class="side-head">
         <span class="brand">cc-dash</span>
-        <button id="new-btn" class="btn primary" title="Start en ny Claude-sesjon eller terminal">+ Ny sesjon</button>
+        <button id="new-btn" class="btn primary" data-i18n="side.newBtn" data-i18n-title="side.newBtnTitle"></button>
       </header>
       <div class="filter-row">
-        <input id="filter" class="filter" type="search" placeholder="Filtrer sesjoner…" autocomplete="off">
+        <input id="filter" class="filter" type="search" data-i18n-placeholder="side.filter" autocomplete="off">
         <button id="group-btn" class="btn small"></button>
       </div>
       <nav id="session-list"></nav>
@@ -30,34 +31,34 @@
           <div id="head-meta" class="head-meta"></div>
         </div>
         <div class="head-actions">
-          <button id="panel-btn" class="btn" title="Vis/skjul panel (diff, filer, forhåndsvisning)">Panel</button>
+          <button id="panel-btn" class="btn" data-i18n="head.panel" data-i18n-title="head.panelTitle"></button>
         </div>
       </header>
       <div id="workspace">
         <section id="term-area">
           <div id="empty" class="empty">
-            <h2>Velg en sesjon</h2>
-            <p>…eller start en ny med <b>+ Ny sesjon</b>.</p>
+            <h2 data-i18n="empty.title"></h2>
+            <p data-i18n-html="empty.body"></p>
           </div>
           <div id="detail" class="detail" hidden></div>
           <div id="terms"></div>
           <div id="term-search" class="term-search" hidden>
-            <input id="search-input" type="search" placeholder="Søk i terminalen…" autocomplete="off" spellcheck="false">
+            <input id="search-input" type="search" data-i18n-placeholder="search.placeholder" autocomplete="off" spellcheck="false">
             <span id="search-count" class="search-count"></span>
-            <button id="search-prev" class="btn small" title="Forrige (Shift+Enter)">↑</button>
-            <button id="search-next" class="btn small" title="Neste (Enter)">↓</button>
-            <button id="search-close" class="btn small" title="Lukk (Esc)">×</button>
+            <button id="search-prev" class="btn small" data-i18n-title="search.prev">↑</button>
+            <button id="search-next" class="btn small" data-i18n-title="search.next">↓</button>
+            <button id="search-close" class="btn small" data-i18n-title="search.close">×</button>
           </div>
         </section>
         <div id="splitter" hidden></div>
         <section id="panel" hidden>
           <div class="tabs" role="tablist">
-            <button class="tab" data-tab="diff">Diff</button>
-            <button class="tab" data-tab="files">Filer</button>
-            <button class="tab" data-tab="preview">Forhåndsvisning</button>
-            <button class="tab" data-tab="refs" title="Lenker, PR-er, work items og commits fra samtalen">Lenker</button>
+            <button class="tab" data-tab="diff" data-i18n="tab.diff"></button>
+            <button class="tab" data-tab="files" data-i18n="tab.files"></button>
+            <button class="tab" data-tab="preview" data-i18n="tab.preview"></button>
+            <button class="tab" data-tab="refs" data-i18n="tab.refs" data-i18n-title="tab.refsTitle"></button>
             <span class="spacer"></span>
-            <button id="panel-refresh" class="btn small" title="Oppdater">↻</button>
+            <button id="panel-refresh" class="btn small" data-i18n-title="panel.refresh">↻</button>
           </div>
           <div id="panel-body"></div>
         </section>
@@ -69,17 +70,17 @@
 
   <dialog id="new-dialog">
     <form method="dialog" id="new-form">
-      <h3>Ny sesjon</h3>
-      <label for="new-profile">Profil</label>
-      <select id="new-profile" title="Profiler legges til under &quot;profiles&quot; i ~/.cc-dash/config.json"></select>
-      <label for="new-cwd">Mappe</label>
-      <input id="new-cwd" required autocomplete="off" spellcheck="false" placeholder="/sti/til/prosjekt">
-      <div class="recent-label">Nylig brukte mapper</div>
+      <h3 data-i18n="new.title"></h3>
+      <label for="new-profile" data-i18n="new.profile"></label>
+      <select id="new-profile" data-i18n-title="new.profileTitle"></select>
+      <label for="new-cwd" data-i18n="new.folder"></label>
+      <input id="new-cwd" required autocomplete="off" spellcheck="false" data-i18n-placeholder="new.folderPlaceholder">
+      <div class="recent-label" data-i18n="new.recent"></div>
       <div id="recent-dirs" class="recent-dirs"></div>
       <p id="new-error" class="error" hidden></p>
       <div class="dialog-actions">
-        <button type="button" class="btn" value="cancel" id="new-cancel">Avbryt</button>
-        <button type="submit" class="btn primary" value="ok">Start</button>
+        <button type="button" class="btn" value="cancel" id="new-cancel" data-i18n="new.cancel"></button>
+        <button type="submit" class="btn primary" value="ok" data-i18n="new.start"></button>
       </div>
     </form>
   </dialog>

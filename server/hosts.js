@@ -50,7 +50,7 @@ export function resolveShell(shell) {
       if (dir && fs.existsSync(full)) return full;
     }
   }
-  throw new Error(`Fant ikke skallet «${shell}» på PATH`);
+  throw new Error(`Shell "${shell}" not found on PATH`);
 }
 
 export const defaultShell = () =>process.env.CC_DASH_SHELL || (IS_WIN ? 'powershell.exe' : process.env.SHELL || '/bin/bash');
