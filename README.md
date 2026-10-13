@@ -7,7 +7,7 @@ shows the git diff, lets you browse files, and previews Markdown, HTML and image
 
 ```
 ┌ sidebar ─────────────┬ terminal (the real claude CLI) ─┬ panel ───────────────┐
-│ RUNNING HERE         │                                 │ Diff | Files | Prev. │
+│ RUNNING HERE         │                                 │ Diff | Files | Links │
 │ ● Fix login  $1.20   │  > fix the login bug            │ M src/auth.ts  +12 −3│
 │   api · main  working│                                 │ @@ -10,6 +10,9 @@    │
 │ ◐ Blog post  $0.35   │                                 │ + const token = …    │
@@ -181,6 +181,10 @@ browser. For remote access, use e.g. Tailscale or an SSH tunnel.
 ## Tips
 
 - **Shift+Enter** gives a new line in Claude's prompt.
+- **Ctrl+.** jumps to the next session that needs you: first the ones waiting
+  for permission, then finished turns you haven't looked at yet.
+- Under **Files**, the arrow keys browse: ↑/↓ preview each file in turn, →
+  opens a folder and ← goes back up. ⤢ gives the preview the whole panel.
 - The UI is in English or Norwegian. It follows the browser language; switch
   with the button at the bottom of the sidebar.
 

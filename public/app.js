@@ -32,13 +32,16 @@ const state = {
   filter: '',
   groupBy: store.get('groupBy', 'folder'), // sidebar: 'folder' | 'status'
   collapsed: new Set(store.get('collapsed', [])), // folder groups folded away
+  showAll: new Set(), // groups showing all their ended sessions, not just the newest
+  oldOpen: store.get('oldOpen', false), // the sidebar's "Earlier" section is unfolded
   panelOpen: store.get('panelOpen', false),
-  tab: store.get('tab', 'diff'),
+  tab: store.get('tab', 'diff') === 'preview' ? 'files' : store.get('tab', 'diff'), // Preview is part of Files now
   roots: {}, // session key -> the folders it works in (cwd first), see folders.js
   filesRoot: {}, // session key -> root id shown under Files
   filesPath: {}, // `${session key}:${root id}` -> current dir
   openRoots: new Set(), // `${session key}:${root id}` of read-only folders expanded under Diff
   preview: null, // { key, root, path }
+  previewMax: store.get('previewMax', false), // the preview fills the Files tab
   resumeProfile: {}, // session key -> profile id picked for "Continue here"
   refsFilter: '',
   terms: new Map(), // managedId -> { term, fit, ws, el, exited }
@@ -104,18 +107,48 @@ function waited(t) {
   return tr('time.hoursMin', Math.floor(s / 3600), Math.floor((s % 3600) / 60));
 }
 
+// A permission prompt left this long gets louder.
+const LONG_WAIT_MS = 2 * 60 * 1000;
+
+// When each session was last looked at (selected while the page is showing).
+// A finished turn stands out only until you have seen it.
+const seen = new Map(Object.entries(store.get('seen', {})));
+const isSeen = (s) => seen.get(s.key) >= s.stateAt;
+
+function markSeen() {
+  const s = current();
+  if (!s?.stateAt || document.hidden || isSeen(s)) return;
+  seen.set(s.key, Date.now());
+  closeNote(s.key);
+  const keys = new Set(state.sessions.map((x) => x.key));
+  store.set('seen', Object.fromEntries([...seen].filter(([k]) => keys.has(k))));
+}
+
+// Only a blocked session gets a running clock. A finished one is either new
+// to you or not; the sidebar already says how long ago it finished.
 function stateHtml(s) {
   if (!s.state || s.state === 'ended') return '';
   const label = s.state === 'working' && s.stateDetail ? tr('state.workingOn', s.stateDetail) : tr(`state.${s.state}`);
-  const timer = (s.state === 'idle' || s.state === 'waiting') && s.stateAt
-    ? ` · <span class="since" data-since="${s.stateAt}" title="${esc(tr('state.waitingSince', new Date(s.stateAt).toLocaleTimeString()))}">${waited(s.stateAt)}</span>`
-    : '';
-  return `<span class="state s-${s.state}"><span class="dot"></span>${esc(label)}${timer}</span>`;
+  let cls = `state s-${s.state}`;
+  let title = '';
+  let timer = '';
+  if (s.state === 'waiting' && s.stateAt) {
+    if (Date.now() - s.stateAt > LONG_WAIT_MS) cls += ' long';
+    timer = ` · <span class="since" data-since="${s.stateAt}" title="${esc(tr('state.waitingSince', new Date(s.stateAt).toLocaleTimeString()))}">${waited(s.stateAt)}</span>`;
+  } else if (s.state === 'idle' && s.stateAt) {
+    cls += isSeen(s) ? ' seen' : ' unseen';
+    title = ` title="${esc(tr('state.doneAt', new Date(s.stateAt).toLocaleTimeString()))}"`;
+  }
+  return `<span class="${cls}"${title}><span class="dot"></span>${esc(label)}${timer}</span>`;
 }
 
 // Tick the wait counters between polls so they count by the second.
 setInterval(() => {
-  for (const el of document.querySelectorAll('.since')) el.textContent = waited(Number(el.dataset.since));
+  for (const el of document.querySelectorAll('.since')) {
+    const t = Number(el.dataset.since);
+    el.textContent = waited(t);
+    el.closest('.state')?.classList.toggle('long', Date.now() - t > LONG_WAIT_MS);
+  }
 }, 1000);
 
 async function api(path, opts = {}) {
@@ -172,6 +205,10 @@ function itemHtml(s, byFolder) {
 // them jump around on every poll while Claude works. The rest follow by
 // latest activity. Inside a group the server's order holds: running here,
 // open elsewhere, then most recent.
+// How many ended sessions a sidebar group shows before "Show N older".
+const ENDED_PER_FOLDER = 5;
+const ENDED_PER_STATUS = 15;
+
 function folderGroups(list) {
   const groups = new Map();
   for (const s of list) {
@@ -193,24 +230,60 @@ function statusGroups(list) {
   ].filter((g) => g.items.length);
 }
 
+// A folder group: a header that folds it, then its sessions. `key` tells the
+// same folder apart in the live and the ended section.
+function groupHtml(g, key, f, limit) {
+  // While filtering, show every hit even in collapsed groups.
+  const collapsed = !f && state.collapsed.has(key);
+  let html = `<button class="group-label group-toggle" data-group="${esc(key)}" title="${esc(g.title)}" aria-expanded="${!collapsed}">
+    <span class="chev">${collapsed ? '▸' : '▾'}</span><span class="grow">${esc(g.label)}</span>
+    <span title="${esc(tr('side.groupCount', g.items.length))}">${g.items.length}</span></button>`;
+  if (!collapsed) html += groupItemsHtml(g, key, f, limit, true);
+  return html;
+}
+
+// Live sessions always show; of the ended ones only the newest few, unless
+// the group is opened up, a filter is on, or it holds the selected one.
+function groupItemsHtml(g, key, f, limit, byFolder) {
+  const all = !!f || state.showAll.has(key);
+  const old = new Set(g.items.filter((s) => !isLive(s)).slice(limit).map((s) => s.key));
+  const shown = all ? g.items : g.items.filter((s) => !old.has(s.key) || s.key === state.selected);
+  let html = shown.map((s) => itemHtml(s, byFolder)).join('');
+  const hidden = g.items.length - shown.length;
+  if (hidden) html += `<button class="show-more" data-more="${esc(key)}">${esc(tr('side.showOlder', hidden))}</button>`;
+  else if (!f && old.size && state.showAll.has(key)) html += `<button class="show-more" data-more="${esc(key)}">${esc(tr('side.showFewer'))}</button>`;
+  return html;
+}
+
+
 function renderSidebar() {
   const f = state.filter.toLowerCase();
   const match = (s) => !f || [s.title, s.cwd, s.lastPrompt, s.gitBranch, s.projectName, profileOf(s)?.tag].some((v) => v && v.toLowerCase().includes(f));
   const byFolder = state.groupBy === 'folder';
   const list = state.sessions.filter(match);
   let html = '';
-  for (const g of byFolder ? folderGroups(list) : statusGroups(list)) {
-    // While filtering, show every hit even in collapsed groups.
-    const collapsed = byFolder && !f && state.collapsed.has(g.key);
-    const liveCount = g.items.filter(isLive).length;
-    if (byFolder) {
-      html += `<button class="group-label group-toggle" data-group="${esc(g.key)}" title="${esc(g.title)}" aria-expanded="${!collapsed}">
-        <span class="chev">${collapsed ? '▸' : '▾'}</span><span class="grow">${esc(g.label)}</span>
-        ${liveCount ? `<span class="live-count">${esc(tr('side.groupActive', liveCount))}</span>` : ''}<span title="${esc(tr('side.groupCount', g.items.length))}">${g.items.length}</span></button>`;
-    } else {
-      html += `<div class="group-label">${esc(g.label)}</div>`;
+  if (byFolder) {
+    // Live sessions on top, by folder. The ended ones below, by folder again,
+    // in a section that stays folded until asked for.
+    const live = list.filter(isLive);
+    const ended = list.filter((s) => !isLive(s));
+    if (live.length) {
+      html += `<div class="section-label">${esc(tr('side.live'))}</div>`;
+      for (const g of folderGroups(live)) html += groupHtml(g, g.key, f, Infinity);
     }
-    if (!collapsed) html += g.items.map((s) => itemHtml(s, byFolder)).join('');
+    if (ended.length) {
+      const open = !!f || state.oldOpen;
+      html += `<button class="section-label section-toggle" data-section="old" aria-expanded="${open}">
+        <span class="chev">${open ? '▾' : '▸'}</span><span class="grow">${esc(tr('side.earlier'))}</span><span>${ended.length}</span></button>`;
+      // Folded, it still shows the selected session, say one found by search.
+      const items = open ? ended : ended.filter((s) => s.key === state.selected);
+      for (const g of folderGroups(items)) html += groupHtml(g, `old:${g.key}`, f, open ? ENDED_PER_FOLDER : Infinity);
+    }
+  } else {
+    for (const g of statusGroups(list)) {
+      html += `<div class="group-label">${esc(g.label)}</div>`;
+      html += groupItemsHtml(g, g.key, f, ENDED_PER_STATUS, false);
+    }
   }
   $('#session-list').innerHTML = html || `<div class="panel-msg">${tr('side.none')}</div>`;
   $('#group-btn').textContent = tr(byFolder ? 'side.byFolder' : 'side.byStatus');
@@ -247,6 +320,18 @@ $('#session-list').addEventListener('click', (e) => {
   if (more) {
     e.stopPropagation();
     return openMenu(more.dataset.menu, more.getBoundingClientRect());
+  }
+  const showMore = e.target.closest('[data-more]');
+  if (showMore) {
+    const k = showMore.dataset.more;
+    if (state.showAll.has(k)) state.showAll.delete(k);
+    else state.showAll.add(k);
+    return renderSidebar();
+  }
+  if (e.target.closest('[data-section="old"]')) {
+    state.oldOpen = !state.oldOpen;
+    store.set('oldOpen', state.oldOpen);
+    return renderSidebar();
   }
   const group = e.target.closest('[data-group]');
   if (group) {
@@ -362,6 +447,7 @@ function select(key) {
   const changed = key !== state.selected;
   state.selected = key;
   store.set('selected', key);
+  markSeen();
   if (changed) {
     state.preview = null;
     closeSearch();
@@ -485,6 +571,8 @@ function termKey(t, e) {
     return false;
   }
   const mod = (e.ctrlKey || e.metaKey) && !e.altKey;
+  // Ctrl+. is cc-dash's (see nextAttention); the document listener acts on it.
+  if (mod && !e.shiftKey && e.code === 'Period') return false;
   if (mod && e.shiftKey && e.code === 'KeyF') {
     e.preventDefault();
     openSearch();
@@ -751,8 +839,7 @@ async function renderPanel() {
   try {
     if (state.tab === 'diff') await renderDiff(s, body);
     else if (state.tab === 'files') await renderFiles(s, body);
-    else if (state.tab === 'refs') await renderRefs(s, body);
-    else await renderPreview(s, body);
+    else await renderRefs(s, body);
   } catch (e) {
     if (state.selected === key) body.innerHTML = `<div class="panel-msg error">${esc(e.message)}</div>`;
   }
@@ -836,12 +923,32 @@ function diffHtml(d) {
   return html;
 }
 
+// Files and the preview share a tab: the list on top, or to the left when the
+// panel is wide enough (see .files-split in style.css). Each half redraws on
+// its own, so the preview stays put while you browse folders and vice versa.
 async function renderFiles(s, body) {
+  if (!filesPane(s, 'files-split')) {
+    body.innerHTML = `<div class="files-split" data-key="${esc(s.key)}" style="--files-list: ${store.get('filesSplit', 35)}%">
+      <div class="files-list"></div><div class="files-gutter" role="separator"></div><div class="files-preview"></div></div>`;
+  }
+  await Promise.all([renderFileList(s), renderPreview(s)]);
+}
+
+const filesPane = (s, cls) => $(`#panel-body .files-split[data-key="${CSS.escape(s.key)}"]${cls === 'files-split' ? '' : ` .${cls}`}`);
+const onFiles = (s) => state.selected === s.key && state.tab === 'files';
+const rowPath = (row) => row?.dataset.open ?? row?.dataset.dir;
+
+// `focus`: the path of the row to focus afterwards, or true for the first.
+// Without it, a row that had focus keeps it across the redraw.
+async function renderFileList(s, focus) {
   const roots = await loadRoots(s);
   const root = roots.find((r) => r.id === state.filesRoot[s.key]) || roots[0];
   const dir = state.filesPath[`${s.key}:${root.id}`] || '';
   const d = await api(`/api/sessions/${s.key}/files?root=${root.id}&path=${encodeURIComponent(dir)}`);
-  if (state.selected !== s.key || state.tab !== 'files') return;
+  const el = filesPane(s, 'files-list');
+  if (!onFiles(s) || !el) return;
+  if (focus == null && el.contains(document.activeElement)) focus = rowPath(document.activeElement.closest('.file-row'));
+  const pv = state.preview?.key === s.key && state.preview.root === root.id ? state.preview.path : null;
   const parts = d.path ? d.path.split('/') : [];
   let crumbs = `<a data-dir="">${esc(shortPath(d.cwd).split(/[\\/]/).pop() || d.cwd)}</a>`;
   parts.forEach((p, i) => (crumbs += ` / <a data-dir="${esc(parts.slice(0, i + 1).join('/'))}">${esc(p)}</a>`));
@@ -850,14 +957,40 @@ async function renderFiles(s, body) {
     html += `<div class="roots">${roots.map((r) => `<button class="chip${r.id === root.id ? ' active' : ''}" data-pick-root="${esc(r.id)}" title="${esc(r.path)}">${esc(r.name)}${changedIn(r) ? '' : ` <span class="muted">${tr('files.read')}</span>`}</button>`).join('')}</div>`;
   }
   html += `<div data-root="${esc(root.id)}"><div class="crumbs">${crumbs}</div>`;
-  if (d.path) html += `<button class="file-row" data-dir="${esc(parts.slice(0, -1).join('/'))}"><span class="icon">↑</span><span class="grow">..</span></button>`;
+  if (d.path) html += `<button class="file-row up" data-dir="${esc(parts.slice(0, -1).join('/'))}"><span class="icon">↑</span><span class="grow">..</span></button>`;
   for (const e of d.entries) {
     const p = d.path ? `${d.path}/${e.name}` : e.name;
     html += e.dir
       ? `<button class="file-row" data-dir="${esc(p)}"><span class="icon">▸</span><span class="grow">${esc(e.name)}/</span></button>`
-      : `<button class="file-row" data-open="${esc(p)}"><span class="icon"></span><span class="grow">${esc(e.name)}</span></button>`;
+      : `<button class="file-row${p === pv ? ' active' : ''}" data-open="${esc(p)}"><span class="icon"></span><span class="grow">${esc(e.name)}</span></button>`;
   }
-  body.innerHTML = html + '</div>';
+  el.innerHTML = html + '</div>';
+  if (focus == null) return;
+  const rows = [...el.querySelectorAll('.file-row')];
+  const row = focus === true ? rows.find((r) => !r.classList.contains('up')) || rows[0] : rows.find((r) => rowPath(r) === focus);
+  row?.focus();
+  row?.scrollIntoView({ block: 'nearest' });
+}
+
+function openDir(s, root, dir, focus) {
+  state.filesPath[`${s.key}:${root}`] = dir;
+  return renderFileList(s, focus);
+}
+
+function openPreview(s, root, path) {
+  state.preview = { key: s.key, root, path, source: false };
+  const list = filesPane(s, 'files-list');
+  const inRoot = list?.querySelector(`[data-root="${CSS.escape(root)}"]`);
+  list?.querySelectorAll('.file-row.active').forEach((r) => r.classList.remove('active'));
+  if (inRoot) [...inRoot.querySelectorAll('[data-open]')].find((r) => r.dataset.open === path)?.classList.add('active');
+  return renderPreview(s);
+}
+
+// While arrowing through a folder, wait for a pause before loading the file.
+let previewTimer = null;
+function previewSoon(s, root, path) {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(() => openPreview(s, root, path).catch(() => {}), 120);
 }
 
 const REF_GROUPS = [
@@ -928,9 +1061,16 @@ const MD_STYLE = `<style>
   a { color: #c2603f; }
 </style>`;
 
-async function renderPreview(s, body) {
-  const pv = state.preview;
-  if (!pv || pv.key !== s.key) {
+let previewSeq = 0; // the newest preview asked for; older ones that load late are dropped
+
+async function renderPreview(s) {
+  const body = filesPane(s, 'files-preview');
+  if (!body) return;
+  const seq = ++previewSeq;
+  const pv = state.preview?.key === s.key ? state.preview : null;
+  // "Large view" hides the list; it only makes sense with something to show.
+  filesPane(s, 'files-split').classList.toggle('max', !!pv && !!state.previewMax);
+  if (!pv) {
     body.innerHTML = `<div class="panel-msg">${tr('preview.pick')}</div>`;
     return;
   }
@@ -941,30 +1081,37 @@ async function renderPreview(s, body) {
   const rootName = pv.root !== 'main' && (state.roots[s.key] || []).find((r) => r.id === pv.root)?.name;
   const bar = `<div class="preview-bar"><span class="grow">${rootName ? `${esc(rootName)} / ` : ''}${esc(pv.path)}</span>
     ${isMd || isHtml ? `<button class="btn small" id="src-btn">${tr(pv.source ? 'preview.rendered' : 'preview.source')}</button>` : ''}
-    <a href="${esc(url)}" target="_blank" rel="noopener">${tr('preview.newTab')}</a></div>`;
+    <a href="${esc(url)}" target="_blank" rel="noopener">${tr('preview.newTab')}</a>
+    <button class="btn small" id="max-btn" title="${esc(tr(state.previewMax ? 'preview.restore' : 'preview.max'))}">${state.previewMax ? '⤡' : '⤢'}</button></div>`;
+  const show = (html) => (body.innerHTML = `${bar}<div class="preview-body">${html}</div>`);
 
   if (isHtml && !pv.source) {
-    body.innerHTML = `${bar}<iframe class="preview-frame" sandbox="allow-scripts allow-forms" src="${esc(url)}"></iframe>`;
+    show(`<iframe class="preview-frame" sandbox="allow-scripts allow-forms" src="${esc(url)}"></iframe>`);
   } else if (IMAGE.has(e)) {
-    body.innerHTML = `${bar}<img class="preview-img" src="${esc(url)}" alt="${esc(pv.path)}">`;
+    show(`<img class="preview-img" src="${esc(url)}" alt="${esc(pv.path)}">`);
   } else if (e === 'pdf') {
-    body.innerHTML = `${bar}<div class="panel-msg">${tr('preview.pdf')}</div>`;
+    show(`<div class="panel-msg">${tr('preview.pdf')}</div>`);
   } else {
     const text = await api(`/api/sessions/${s.key}/file?root=${pv.root}&path=${encodeURIComponent(pv.path)}`).then((t) => (typeof t === 'string' ? t : JSON.stringify(t, null, 2)));
-    if (state.selected !== s.key || state.tab !== 'preview') return;
+    if (seq !== previewSeq || !onFiles(s)) return;
     if (isMd && !pv.source) {
       // Rendered without scripts; <base> makes relative images resolve to the session's files.
       const dir = pv.path.includes('/') ? pv.path.slice(0, pv.path.lastIndexOf('/') + 1) : '';
       const doc = `<!doctype html><meta charset="utf-8"><base href="${esc(location.origin + rawUrl(s.key, pv.root, dir || '.') + (dir ? '' : '/'))}" target="_blank">${MD_STYLE}${marked.parse(text)}`;
-      body.innerHTML = `${bar}<iframe class="preview-frame" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>`;
+      show('<iframe class="preview-frame" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>');
       body.querySelector('iframe').srcdoc = doc;
     } else {
-      body.innerHTML = `${bar}<pre class="preview-text">${esc(text)}</pre>`;
+      show(`<pre class="preview-text">${esc(text)}</pre>`);
     }
   }
-  $('#src-btn')?.addEventListener('click', () => {
+  body.querySelector('#src-btn')?.addEventListener('click', () => {
     pv.source = !pv.source;
-    renderPanel();
+    renderPreview(s);
+  });
+  body.querySelector('#max-btn').addEventListener('click', () => {
+    state.previewMax = !state.previewMax;
+    store.set('previewMax', state.previewMax);
+    renderPreview(s);
   });
 }
 
@@ -987,20 +1134,72 @@ $('#panel-body').addEventListener('click', (e) => {
   const pick = e.target.closest('[data-pick-root]');
   if (pick && s) {
     state.filesRoot[s.key] = pick.dataset.pickRoot;
-    return renderPanel();
+    return renderFileList(s);
   }
   const root = e.target.closest('[data-root]')?.dataset.root || 'main';
   const open = e.target.closest('[data-open]');
   if (open && s) {
     e.preventDefault();
-    state.preview = { key: s.key, root, path: open.dataset.open, source: false };
-    return setTab('preview');
+    const path = open.dataset.open;
+    if (state.tab === 'files') return openPreview(s, root, path);
+    // From Diff: show the file under Files, with the list in its folder.
+    state.preview = { key: s.key, root, path, source: false };
+    state.filesRoot[s.key] = root;
+    state.filesPath[`${s.key}:${root}`] = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+    return setTab('files');
   }
   const dir = e.target.closest('[data-dir]');
-  if (dir && s) {
-    state.filesPath[`${s.key}:${root}`] = dir.dataset.dir;
-    renderPanel();
-  }
+  // e.detail is 0 for Enter/Space, so the keyboard lands in the new folder.
+  if (dir && s) openDir(s, root, dir.dataset.dir, e.detail === 0 ? true : undefined);
+});
+
+// Arrow keys in the file list: ↑/↓ move and preview, →/Enter open a folder,
+// ←/Backspace go up a level.
+$('#panel-body').addEventListener('keydown', (e) => {
+  const row = e.target.closest?.('.files-list .file-row');
+  const s = current();
+  if (!row || !s || e.altKey || e.ctrlKey || e.metaKey) return;
+  const rows = [...row.closest('.files-list').querySelectorAll('.file-row')];
+  const root = row.closest('[data-root]').dataset.root;
+  const dir = state.filesPath[`${s.key}:${root}`] || '';
+  const go = (r) => {
+    if (!r) return;
+    r.focus();
+    r.scrollIntoView({ block: 'nearest' });
+    if (r.dataset.open) previewSoon(s, root, r.dataset.open);
+  };
+  const i = rows.indexOf(row);
+  if (e.key === 'ArrowDown') go(rows[i + 1]);
+  else if (e.key === 'ArrowUp') go(rows[i - 1]);
+  else if (e.key === 'Home') go(rows[0]);
+  else if (e.key === 'End') go(rows.at(-1));
+  else if (e.key === 'ArrowRight' && row.dataset.dir != null && !row.classList.contains('up')) openDir(s, root, row.dataset.dir, true);
+  else if ((e.key === 'ArrowLeft' || e.key === 'Backspace') && dir) openDir(s, root, dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : '', dir);
+  else return;
+  e.preventDefault();
+});
+
+// The split between the file list and the preview, along whichever way it runs.
+$('#panel-body').addEventListener('pointerdown', (e) => {
+  const gutter = e.target.closest('.files-gutter');
+  if (!gutter) return;
+  const split = gutter.parentElement;
+  const across = getComputedStyle(split).flexDirection === 'row';
+  const box = split.getBoundingClientRect();
+  let pct = null;
+  gutter.setPointerCapture(e.pointerId);
+  gutter.classList.add('dragging');
+  const move = (ev) => {
+    const at = across ? (ev.clientX - box.left) / box.width : (ev.clientY - box.top) / box.height;
+    pct = Math.round(Math.min(Math.max(at, 0.15), 0.85) * 100);
+    split.style.setProperty('--files-list', `${pct}%`);
+  };
+  gutter.addEventListener('pointermove', move);
+  gutter.addEventListener('pointerup', () => {
+    gutter.classList.remove('dragging');
+    gutter.removeEventListener('pointermove', move);
+    if (pct != null) store.set('filesSplit', pct);
+  }, { once: true });
 });
 
 // Read-only folders under Diff load their diff when expanded. `toggle` does
@@ -1044,16 +1243,50 @@ $('#panel-body').addEventListener('toggle', (e) => {
 const canNotify = 'Notification' in window && window.isSecureContext;
 let lastStates = null; // session key -> state, from the previous poll
 
+const notes = new Map(); // session key -> its open desktop notification
+
 function notify(s, text) {
   if (!canNotify || Notification.permission !== 'granted') return;
   if (!document.hidden && s.key === state.selected) return;
   const n = new Notification(s.title || s.project || tr('notify.session'), { body: text, tag: s.key });
+  notes.set(s.key, n);
+  n.onclose = () => notes.get(s.key) === n && notes.delete(s.key);
   n.onclick = () => {
     window.focus();
     select(s.key);
     n.close();
   };
 }
+
+// Once you have seen the session, its notification has done its job.
+function closeNote(key) {
+  notes.get(key)?.close();
+}
+
+// Sessions that need you: blocked ones first, then finished turns you have
+// not seen yet, each longest-waiting first.
+function needsYou() {
+  const rank = (s) => (s.state === 'waiting' ? 0 : s.state === 'idle' && s.stateAt && !isSeen(s) ? 1 : -1);
+  return state.sessions
+    .filter((s) => rank(s) >= 0)
+    .sort((a, b) => rank(a) - rank(b) || (a.stateAt || 0) - (b.stateAt || 0));
+}
+
+// Ctrl+. jumps to the next session that needs you, in turn.
+function nextAttention() {
+  const list = needsYou();
+  if (!list.length) return;
+  const i = list.findIndex((s) => s.key === state.selected);
+  select(list[(i + 1) % list.length].key);
+  $('#session-list .item.selected')?.scrollIntoView({ block: 'nearest' });
+}
+
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.code === 'Period') {
+    e.preventDefault();
+    nextAttention();
+  }
+});
 
 function watchStates(sessions) {
   if (lastStates) {
@@ -1100,6 +1333,7 @@ async function refresh() {
   state.sessions = data.sessions;
   state.info = { host: data.host, platform: data.platform, hooks: data.hooks, token: data.token, profiles: data.profiles };
   watchStates(state.sessions);
+  markSeen();
 
   // Drop terminals for sessions that are gone.
   const runningIds = new Set(state.sessions.filter((s) => s.running).map((s) => s.managedId));
@@ -1124,3 +1358,11 @@ setPanel(state.panelOpen);
 await refresh();
 renderMain();
 setInterval(refresh, POLL_MS);
+
+// Coming back to the tab counts as seeing the selected session.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  markSeen();
+  renderSidebar();
+  renderHead(current());
+});

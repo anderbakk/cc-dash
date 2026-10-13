@@ -19,6 +19,7 @@ const STRINGS = {
     'state.ended': 'ended',
     'state.workingOn': (d) => `working · ${d}`,
     'state.waitingSince': (t) => `Waiting for you since ${t}`,
+    'state.doneAt': (t) => `Finished at ${t}`,
 
     'profile.title': (name) => `Profile: ${name}`,
 
@@ -35,8 +36,11 @@ const STRINGS = {
     'side.runningHere': 'Running here',
     'side.external': 'Open in other terminals',
     'side.recent': 'Recent',
-    'side.groupActive': (n) => `${n} active`,
     'side.groupCount': (n) => `${n} sessions`,
+    'side.live': 'Active',
+    'side.earlier': 'Earlier',
+    'side.showOlder': (n) => `Show ${n} older`,
+    'side.showFewer': 'Show fewer',
     'side.none': 'No sessions found.',
     'side.byFolder': '⇅ Folder',
     'side.byStatus': '⇅ Status',
@@ -91,7 +95,6 @@ const STRINGS = {
 
     'tab.diff': 'Diff',
     'tab.files': 'Files',
-    'tab.preview': 'Preview',
     'tab.refs': 'Links',
     'tab.refsTitle': 'Links, PRs, work items and commits from the conversation',
     'panel.refresh': 'Refresh',
@@ -126,6 +129,8 @@ const STRINGS = {
     'preview.rendered': 'Show rendered',
     'preview.source': 'Show source',
     'preview.newTab': 'Open in new tab ↗',
+    'preview.max': 'Large view: hide the file list',
+    'preview.restore': 'Show the file list again',
     'preview.pdf': 'PDF opens best in a new tab.',
 
     'notify.session': 'Claude session',
@@ -150,6 +155,7 @@ const STRINGS = {
     'state.ended': 'avsluttet',
     'state.workingOn': (d) => `jobber · ${d}`,
     'state.waitingSince': (t) => `Har ventet på deg siden ${t}`,
+    'state.doneAt': (t) => `Ferdig kl. ${t}`,
 
     'profile.title': (name) => `Profil: ${name}`,
 
@@ -166,8 +172,11 @@ const STRINGS = {
     'side.runningHere': 'Kjører her',
     'side.external': 'Åpne i andre terminaler',
     'side.recent': 'Nylige',
-    'side.groupActive': (n) => `${n} aktiv${n > 1 ? 'e' : ''}`,
     'side.groupCount': (n) => `${n} sesjoner`,
+    'side.live': 'Aktive',
+    'side.earlier': 'Tidligere',
+    'side.showOlder': (n) => `Vis ${n} eldre`,
+    'side.showFewer': 'Vis færre',
     'side.none': 'Ingen sesjoner funnet.',
     'side.byFolder': '⇅ Mappe',
     'side.byStatus': '⇅ Status',
@@ -222,7 +231,6 @@ const STRINGS = {
 
     'tab.diff': 'Diff',
     'tab.files': 'Filer',
-    'tab.preview': 'Forhåndsvisning',
     'tab.refs': 'Lenker',
     'tab.refsTitle': 'Lenker, PR-er, work items og commits fra samtalen',
     'panel.refresh': 'Oppdater',
@@ -257,6 +265,8 @@ const STRINGS = {
     'preview.rendered': 'Vis rendret',
     'preview.source': 'Vis kilde',
     'preview.newTab': 'Åpne i ny fane ↗',
+    'preview.max': 'Stor visning: skjul fillisten',
+    'preview.restore': 'Vis fillisten igjen',
     'preview.pdf': 'PDF åpnes best i ny fane.',
 
     'notify.session': 'Claude-sesjon',

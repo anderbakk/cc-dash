@@ -153,9 +153,15 @@ button { font: inherit; color: inherit; }
 .s-waiting .dot { background: var(--waiting); }
 .s-idle { color: var(--idle); }
 .s-idle .dot { background: var(--idle); }
+.s-waiting.long { font-weight: 700; }
+.s-waiting.long .dot { animation: pulse 1.2s ease-in-out infinite; }
+/* A finished turn you have not looked at yet stands out; once seen it fades. */
+.s-idle.unseen { font-weight: 700; }
+.s-idle.seen { color: var(--fg-dim); font-weight: 400; }
+.s-idle.seen .dot { background: var(--fg-dim); }
 .since { font-variant-numeric: tabular-nums; font-weight: 400; }
 @keyframes pulse { 50% { opacity: .3; } }
-@media (prefers-reduced-motion: reduce) { .s-working .dot { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .s-working .dot, .s-waiting.long .dot { animation: none; } }
 /* Folder groups: a clickable header that folds the group. */
 .group-toggle {
   display: flex;
@@ -172,7 +178,39 @@ button { font: inherit; color: inherit; }
 .group-toggle:hover { color: var(--fg); }
 .group-toggle .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .group-toggle .chev { width: 12px; font-size: 13px; line-height: 1; }
-.live-count { color: var(--idle); text-transform: none; letter-spacing: 0; }
+/* Folder view: "Active" on top, then the foldable "Earlier" with the ended ones. */
+.section-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  background: none;
+  text-align: left;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .8px;
+  text-transform: uppercase;
+  color: var(--fg);
+  padding: 12px 8px 2px;
+}
+.section-toggle { margin-top: 12px; border-top: 1px solid var(--border); color: var(--fg-dim); cursor: pointer; }
+.section-toggle:hover { color: var(--fg); }
+.section-toggle .grow { flex: 1; }
+.section-toggle .chev { width: 12px; font-size: 13px; line-height: 1; }
+/* "Show N older" under a group with more ended sessions than it shows. */
+.show-more {
+  display: block;
+  border: 0;
+  background: none;
+  padding: 3px 8px 6px;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.show-more:hover, .show-more:focus-visible { color: var(--fg); text-decoration: underline; }
 
 .item-actions { position: absolute; top: 4px; right: 4px; display: flex; gap: 2px; }
 .kill, .more {
@@ -419,7 +457,24 @@ details.root > summary.root-head { cursor: pointer; }
 }
 .preview-bar .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .preview-bar a { color: var(--accent); }
-.preview-frame { border: 0; width: 100%; height: calc(100% - 37px); background: #fff; display: block; }
+.preview-frame { border: 0; width: 100%; height: 100%; background: #fff; display: block; }
+.preview-body { flex: 1; overflow: auto; min-height: 0; }
+
+/* Files: the list and the preview of the file picked in it. Stacked, or side
+   by side once the panel is wide enough; the gutter between them drags. */
+#panel-body { container-type: inline-size; }
+.files-split { position: absolute; inset: 0; display: flex; flex-direction: column; }
+.files-list { flex: 0 0 var(--files-list, 35%); overflow: auto; min-height: 0; min-width: 0; }
+.files-preview { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.files-gutter { flex: none; height: 5px; cursor: row-resize; background: var(--border); touch-action: none; }
+.files-gutter:hover, .files-gutter.dragging { background: var(--accent); }
+.files-split.max .files-list, .files-split.max .files-gutter { display: none; }
+@container (min-width: 640px) {
+  .files-split { flex-direction: row; }
+  .files-gutter { height: auto; width: 5px; cursor: col-resize; }
+}
+.files-list .file-row.active { background: var(--bg-hover); color: var(--accent); }
+.files-list .file-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .preview-img { max-width: 100%; display: block; margin: 16px auto; }
 .preview-text { margin: 0; padding: 12px; font: 12px/1.5 var(--mono); white-space: pre; overflow-x: auto; }
 
