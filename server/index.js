@@ -96,6 +96,8 @@ const VENDOR = {
   '/vendor/addon-unicode11.mjs': [pkgDir('@xterm/addon-unicode11'), 'lib/addon-unicode11.mjs'],
   '/vendor/marked.esm.js': [pkgDir('marked'), 'lib/marked.esm.js'],
 };
+// Mermaid's ESM build loads a chunk per diagram type, so it is served as a folder.
+const MERMAID_DIR = path.join(pkgDir('mermaid'), 'dist');
 
 function send(res, status, body, type = 'application/json; charset=utf-8', extra = {}) {
   const data = typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body);
@@ -157,6 +159,10 @@ async function handle(req, res) {
   }
 
   if (VENDOR[p]) return sendFile(res, path.join(...VENDOR[p]));
+  if (p.startsWith('/vendor/mermaid/')) {
+    const file = safeResolve(MERMAID_DIR, decodeURIComponent(p.slice('/vendor/mermaid/'.length)));
+    return file ? sendFile(res, file) : send(res, 404, { error: 'Not found' });
+  }
 
   if (!p.startsWith('/api/')) {
     const file = path.join(PUBLIC, p === '/' ? 'index.html' : p);

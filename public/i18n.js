@@ -137,6 +137,7 @@ const STRINGS = {
     'preview.prev': 'Previous file in the folder',
     'preview.next': 'Next file in the folder',
     'preview.pdf': 'PDF opens best in a new tab.',
+    'preview.mermaidError': (m) => `Could not draw the diagram: ${m}`,
 
     'notify.session': 'Claude session',
     'notify.waiting': 'Waiting for you',
@@ -278,6 +279,7 @@ const STRINGS = {
     'preview.prev': 'Forrige fil i mappen',
     'preview.next': 'Neste fil i mappen',
     'preview.pdf': 'PDF åpnes best i ny fane.',
+    'preview.mermaidError': (m) => `Kunne ikke tegne diagrammet: ${m}`,
 
     'notify.session': 'Claude-sesjon',
     'notify.waiting': 'Venter på deg',

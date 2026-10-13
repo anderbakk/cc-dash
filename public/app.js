@@ -1121,7 +1121,48 @@ const MD_STYLE = `<style>
   table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: 4px 8px; }
   img { max-width: 100%; } blockquote { border-left: 3px solid #ddd; margin: 0; padding-left: 12px; color: #555; }
   a { color: #c2603f; }
+  .mermaid { margin: 1em 0; text-align: center; overflow-x: auto; } .mermaid svg { max-width: 100%; height: auto; }
+  .mermaid-error { color: #b3261e; font-size: .85em; margin: -.5em 0 1em; }
 </style>`;
+
+// Mermaid is large, so it loads the first time a preview has a diagram.
+let mermaidLib = null;
+function loadMermaid() {
+  mermaidLib ||= import('/vendor/mermaid/mermaid.esm.min.mjs').then(({ default: m }) => {
+    m.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'default' });
+    return m;
+  });
+  return mermaidLib;
+}
+
+// Draw the ```mermaid blocks in rendered markdown as SVG here, so the preview
+// frame itself still runs no scripts. A diagram that fails keeps its source.
+let mermaidSeq = 0;
+async function drawMermaid(html) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  const blocks = [...tpl.content.querySelectorAll('pre > code.language-mermaid')];
+  if (!blocks.length) return html;
+  const m = await loadMermaid();
+  for (const code of blocks) {
+    const id = `mmd-${++mermaidSeq}`;
+    const pre = code.parentElement;
+    try {
+      const { svg } = await m.render(id, code.textContent);
+      const div = document.createElement('div');
+      div.className = 'mermaid';
+      div.innerHTML = svg;
+      pre.replaceWith(div);
+    } catch (err) {
+      document.getElementById(`d${id}`)?.remove(); // mermaid's scratch element
+      const note = document.createElement('div');
+      note.className = 'mermaid-error';
+      note.textContent = tr('preview.mermaidError', String(err?.message || err).split('\n')[0]);
+      pre.after(note);
+    }
+  }
+  return tpl.innerHTML;
+}
 
 let previewSeq = 0; // the newest preview asked for; older ones that load late are dropped
 
@@ -1138,7 +1179,7 @@ async function renderPreview(s) {
   }
   const url = rawUrl(s.key, pv.root, pv.path);
   const e = ext(pv.path);
-  const isMd = e === 'md' || e === 'markdown';
+  const isMd = e === 'md' || e === 'markdown' || e === 'mmd' || e === 'mermaid';
   const isHtml = e === 'html' || e === 'htm';
   const rootName = pv.root !== 'main' && (state.roots[s.key] || []).find((r) => r.id === pv.root)?.name;
   const bar = `<div class="preview-bar"><span class="grow">${rootName ? `${esc(rootName)} / ` : ''}${esc(pv.path)}</span>
@@ -1160,7 +1201,11 @@ async function renderPreview(s) {
     if (isMd && !pv.source) {
       // Rendered without scripts; <base> makes relative images resolve to the session's files.
       const dir = pv.path.includes('/') ? pv.path.slice(0, pv.path.lastIndexOf('/') + 1) : '';
-      const doc = `<!doctype html><meta charset="utf-8"><base href="${esc(location.origin + rawUrl(s.key, pv.root, dir || '.') + (dir ? '' : '/'))}" target="_blank">${MD_STYLE}${marked.parse(text)}`;
+      // A .mmd file is one diagram: render it as a markdown block holding it.
+      const md = e === 'mmd' || e === 'mermaid' ? `<pre><code class="language-mermaid">${esc(text)}</code></pre>` : marked.parse(text);
+      const html = await drawMermaid(md);
+      if (seq !== previewSeq || !onFiles(s)) return;
+      const doc = `<!doctype html><meta charset="utf-8"><base href="${esc(location.origin + rawUrl(s.key, pv.root, dir || '.') + (dir ? '' : '/'))}" target="_blank">${MD_STYLE}${html}`;
       show('<iframe class="preview-frame" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>');
       body.querySelector('iframe').srcdoc = doc;
     } else {
