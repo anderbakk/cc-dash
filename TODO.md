@@ -1,31 +1,33 @@
 # TODO
 
-Prioritert etter verdi i daglig bruk.
+Prioritised by value in daily use.
 
-## Nå
+## Now
 
-- [x] **Sesjoner som bruker flere mapper.** Finn mappene en sesjon har skrevet til
-      eller jobbet i utenfor startmappen (fra verktøykallene i transkriptet), og vis
-      dem under Diff og Filer. Mapper som ikke er git-repo viser filene Claude har
-      endret i sesjonen.
+- [x] **Sessions that use several folders.** Find the folders a session has written
+      to or worked in outside its start folder (from the tool calls in the transcript),
+      and show them under Diff and Files. Folders that are not git repos show the files
+      Claude changed in the session.
+- [x] **English UI.** The UI is available in English and Norwegian; the language
+      follows the browser and can be switched in the sidebar footer.
 
-## Snart
+## Soon
 
-- [ ] **Autostart på Windows.** Med node-pty dør alle sesjoner når cc-dash stopper.
-      `npm run install-service` som registrerer en planlagt oppgave ved pålogging
-      (`--no-open`), og `npm run uninstall-service`.
-- [ ] **Tester.** `test/folders.test.js` er på plass (og `npm test` virker igjen). Dekk transkript-
-      parsing (kostnad, tittel, mapper), `safeResolve` og `setup.js`.
-- [ ] **Riktig hint ved opptatt port.** Feilmeldingen foreslår `PORT=7421 npm start`,
-      som ikke virker i PowerShell.
-- [ ] **Eget token for forhåndsvisning.** `/raw/<token>/…` bruker hovedtokenet, og
-      forhåndsvist HTML kan kjøre skript og lese sin egen URL. Bruk et token som bare
-      gir lesetilgang til filer.
+- [ ] **Autostart on Windows.** With node-pty, every session dies when cc-dash stops.
+      `npm run install-service` that registers a scheduled task at logon
+      (`--no-open`), and `npm run uninstall-service`.
+- [ ] **Tests.** `test/folders.test.js` is in place (and `npm test` works again). Cover
+      transcript parsing (cost, title, folders), `safeResolve` and `setup.js`.
+- [ ] **Correct hint when the port is taken.** The error message suggests
+      `PORT=7421 npm start`, which does not work in PowerShell.
+- [ ] **Separate token for previews.** `/raw/<token>/…` uses the main token, and
+      previewed HTML can run scripts and read its own URL. Use a token that only
+      grants read access to files.
 
-## Senere
+## Later
 
-- [ ] Rydd opp i / avslutt flere sesjoner samtidig.
-- [ ] Filtrer sidebaren per prosjekt.
-- [ ] Kostnad per dag og per prosjekt.
-- [ ] Engelsk UI (README sier «Norwegian for now»).
-- [ ] Ekstern tilgang via Tailscale (`HOST=<tailscale-ip>`), lagt på is.
+- [ ] Clean up / end several sessions at once.
+- [ ] Filter the sidebar per project.
+- [ ] Cost per day and per project.
+- [ ] Translate server error messages, so they follow the UI language too.
+- [ ] Remote access via Tailscale (`HOST=<tailscale-ip>`), on hold.

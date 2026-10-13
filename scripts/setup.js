@@ -33,7 +33,7 @@ function readJson(file, fallback) {
     return JSON.parse(stripBom(fs.readFileSync(file, 'utf8')));
   } catch (e) {
     if (e.code === 'ENOENT') return fallback;
-    throw new Error(`Klarte ikke å lese ${file}: ${e.message}`);
+    throw new Error(`Could not read ${file}: ${e.message}`);
   }
 }
 
@@ -85,6 +85,6 @@ fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + '\n');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
 
-console.log(remove ? 'cc-dash hooks og statusline er fjernet.' : 'cc-dash hooks og statusline er installert.');
-console.log(`Endret: ${SETTINGS_FILE}`);
-if (!remove) console.log('Gjelder for nye Claude-sesjoner. Kjør "npm run setup:remove" for å angre.');
+console.log(remove ? 'cc-dash hooks and status line removed.' : 'cc-dash hooks and status line installed.');
+console.log(`Changed: ${SETTINGS_FILE}`);
+if (!remove) console.log('Applies to new Claude sessions. Run "npm run setup:remove" to undo.');

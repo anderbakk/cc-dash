@@ -105,8 +105,8 @@ function send(res, status, body, type = 'application/json; charset=utf-8', extra
 
 function sendFile(res, file, extra = {}) {
   fs.stat(file, (err, st) => {
-    if (err || !st.isFile()) return send(res, 404, { error: 'Ikke funnet' });
-    if (st.size > MAX_PREVIEW) return send(res, 413, { error: 'Filen er for stor for forhåndsvisning' });
+    if (err || !st.isFile()) return send(res, 404, { error: 'Not found' });
+    if (st.size > MAX_PREVIEW) return send(res, 413, { error: 'The file is too large to preview' });
     res.writeHead(200, { 'Content-Type': mimeFor(file), 'Content-Length': st.size, 'Cache-Control': 'no-store', ...extra });
     fs.createReadStream(file).pipe(res);
   });
@@ -116,17 +116,17 @@ async function readJson(req) {
   let body = '';
   for await (const chunk of req) {
     body += chunk;
-    if (body.length > 1e5) throw new Error('For stor forespørsel');
+    if (body.length > 1e5) throw new Error('Request too large');
   }
   return body ? JSON.parse(body) : {};
 }
 
 const LOGIN_PAGE = `<!doctype html><meta charset="utf-8"><title>cc-dash</title>
 <body style="font:16px system-ui;padding:2rem;background:#111;color:#ddd">
-<h1>cc-dash</h1><p>Åpne lenken med token som ble skrevet ut i terminalen der du startet <code>npm start</code>.</p>`;
+<h1>cc-dash</h1><p>Open the link with the token that was printed in the terminal where you ran <code>npm start</code>.</p>`;
 
 async function handle(req, res) {
-  if (!hostOk(req)) return send(res, 403, 'Ugyldig Host-header', 'text/plain');
+  if (!hostOk(req)) return send(res, 403, 'Invalid Host header', 'text/plain');
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
 
@@ -144,15 +144,15 @@ async function handle(req, res) {
   // /raw/<token>/<session>/<root id>/<path>
   const raw = p.match(/^\/raw\/([^/]+)\/([^/]+)\/([^/]+)\/(.*)$/);
   if (raw && req.method === 'GET') {
-    if (!tokenOk(raw[1])) return send(res, 401, { error: 'Ikke innlogget' });
+    if (!tokenOk(raw[1])) return send(res, 401, { error: 'Not logged in' });
     const dir = await manager.rootDir(raw[2], raw[3]);
     const file = dir && safeResolve(dir, decodeURIComponent(raw[4]));
-    if (!file) return send(res, 404, { error: 'Ikke funnet' });
+    if (!file) return send(res, 404, { error: 'Not found' });
     return sendFile(res, file, { 'Content-Security-Policy': 'sandbox allow-scripts' });
   }
 
   if (!authed(req)) {
-    if (p.startsWith('/api/')) return send(res, 401, { error: 'Ikke innlogget' });
+    if (p.startsWith('/api/')) return send(res, 401, { error: 'Not logged in' });
     return send(res, 401, LOGIN_PAGE, 'text/html; charset=utf-8');
   }
 
@@ -160,11 +160,11 @@ async function handle(req, res) {
 
   if (!p.startsWith('/api/')) {
     const file = path.join(PUBLIC, p === '/' ? 'index.html' : p);
-    if (!file.startsWith(PUBLIC + path.sep)) return send(res, 404, { error: 'Ikke funnet' });
+    if (!file.startsWith(PUBLIC + path.sep)) return send(res, 404, { error: 'Not found' });
     return sendFile(res, file);
   }
 
-  if (req.method !== 'GET' && !originOk(req)) return send(res, 403, { error: 'Ugyldig origin' });
+  if (req.method !== 'GET' && !originOk(req)) return send(res, 403, { error: 'Invalid origin' });
 
   try {
     // Lets a second start, and scripts/start.js and stop.js, tell that this is
@@ -203,9 +203,9 @@ async function handle(req, res) {
     const m = p.match(/^\/api\/sessions\/([^/]+)(?:\/(diff|files|file|refs|roots))?$/);
     if (m) {
       const [, id, action] = m;
-      if (!safeId(id)) return send(res, 400, { error: 'Ugyldig id' });
+      if (!safeId(id)) return send(res, 400, { error: 'Invalid id' });
       if (!action && req.method === 'DELETE') {
-        return manager.kill(id) ? send(res, 200, { ok: true }) : send(res, 404, { error: 'Ikke funnet' });
+        return manager.kill(id) ? send(res, 200, { ok: true }) : send(res, 404, { error: 'Not found' });
       }
       if (action === 'refs') {
         const refs = refsFor(id);
@@ -216,18 +216,18 @@ async function handle(req, res) {
       if (action === 'roots') return send(res, 200, { roots: await manager.rootsFor(id) });
       // Diff and files work on one of the session's folders, the cwd by default.
       const cwd = await manager.rootDir(id, url.searchParams.get('root'));
-      if (!cwd || !fs.existsSync(cwd)) return send(res, 404, { error: 'Mappen til sesjonen finnes ikke' });
+      if (!cwd || !fs.existsSync(cwd)) return send(res, 404, { error: 'The session folder does not exist' });
       if (action === 'diff') return send(res, 200, await gitDiff(cwd));
       if (action === 'files') {
         const listing = listDir(cwd, url.searchParams.get('path') || '');
-        return listing ? send(res, 200, { cwd, ...listing }) : send(res, 404, { error: 'Ikke funnet' });
+        return listing ? send(res, 200, { cwd, ...listing }) : send(res, 404, { error: 'Not found' });
       }
       if (action === 'file') {
         const file = safeResolve(cwd, url.searchParams.get('path') || '');
-        return file ? sendFile(res, file) : send(res, 404, { error: 'Ikke funnet' });
+        return file ? sendFile(res, file) : send(res, 404, { error: 'Not found' });
       }
     }
-    return send(res, 404, { error: 'Ikke funnet' });
+    return send(res, 404, { error: 'Not found' });
   } catch (e) {
     return send(res, 400, { error: e.message });
   }
@@ -288,22 +288,22 @@ server.on('error', async (e) => {
     if (!noOpen) openBrowser(loginUrl(config.token));
     process.exit(0);
   }
-  if (e.code === 'EADDRINUSE') console.error(`Port ${PORT} er i bruk. Start med en annen port, f.eks. PORT=7421 npm start`);
+  if (e.code === 'EADDRINUSE') console.error(`Port ${PORT} is in use. Start on another port, e.g. PORT=7421 npm start`);
   else console.error(e);
   process.exit(1);
 });
 
 server.listen(PORT, HOST, () => {
   const url = loginUrl(config.token);
-  console.log(`cc-dash kjører (${host.name === 'tmux' ? 'tmux: sesjoner overlever omstart' : 'pty: sesjoner lever så lenge cc-dash kjører'})`);
+  console.log(`cc-dash is running (${host.name === 'tmux' ? 'tmux: sessions survive a restart' : 'pty: sessions live as long as cc-dash runs'})`);
   console.log(`\n  ${url}\n`);
-  if (!hooksInstalled()) console.log('Tips: kjør "npm run setup" for live status (jobber/venter) i sidebaren.\n');
+  if (!hooksInstalled()) console.log('Tip: run "npm run setup" for live status (working/waiting) in the sidebar.\n');
   if (!noOpen) openBrowser(url);
 });
 
 function shutdown() {
   if (host.killAll) {
-    if (manager.managed.size) console.log('Avslutter sesjoner (de kan fortsettes med --resume).');
+    if (manager.managed.size) console.log('Ending sessions (they can be continued with --resume).');
     host.killAll();
   }
   process.exit(0);

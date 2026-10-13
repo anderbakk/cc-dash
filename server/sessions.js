@@ -45,10 +45,10 @@ export class SessionManager {
   create({ cwd, resumeId, profile }) {
     cwd ||= profile.cwd;
     if (!cwd || !fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) {
-      throw new Error(`Mappen finnes ikke: ${cwd}`);
+      throw new Error(`Folder does not exist: ${cwd}`);
     }
-    if (resumeId && !safeId(resumeId)) throw new Error('Ugyldig sesjons-id');
-    if (resumeId && !profile.claude) throw new Error(`Profilen «${profile.name}» starter ikke Claude`);
+    if (resumeId && !safeId(resumeId)) throw new Error('Invalid session id');
+    if (resumeId && !profile.claude) throw new Error(`Profile "${profile.name}" does not start Claude`);
     for (const s of this.managed.values()) {
       if (resumeId && s.claudeSessionId === resumeId) return s; // already running here
     }

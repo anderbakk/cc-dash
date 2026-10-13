@@ -35,7 +35,7 @@ export const COLORS = ['red', 'orange', 'yellow', 'green', 'blue', 'purple', 'pi
 function color(c, i) {
   if (c === undefined) return undefined;
   if (typeof c === 'string' && (COLORS.includes(c) || /^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(c))) return c;
-  warn(`profiles[${i}].color må være ${COLORS.join(', ')} eller en hex-kode som #c93c37, ignorerer den`);
+  warn(`profiles[${i}].color must be ${COLORS.join(', ')} or a hex code like #c93c37, ignoring it`);
   return undefined;
 }
 
@@ -47,8 +47,8 @@ function warn(msg) {
 }
 
 function clean(p, i) {
-  if (!p || typeof p !== 'object' || !str(p.name)) throw new Error(`profiles[${i}] mangler "name"`);
-  if (p.command !== undefined && p.command !== null && !str(p.command)) throw new Error(`profiles[${i}].command må være tekst eller null`);
+  if (!p || typeof p !== 'object' || !str(p.name)) throw new Error(`profiles[${i}] is missing "name"`);
+  if (p.command !== undefined && p.command !== null && !str(p.command)) throw new Error(`profiles[${i}].command must be a string or null`);
   const env = {};
   for (const [k, v] of Object.entries(p.env || {})) if (typeof v === 'string') env[k] = v;
   return {
@@ -79,7 +79,7 @@ export function loadProfiles() {
     try {
       c = clean(p, i);
     } catch (e) {
-      warn(`${e.message}, hopper over`);
+      warn(`${e.message}, skipping it`);
       return;
     }
     while (seen.has(c.id)) c.id += '-2';
@@ -95,8 +95,8 @@ export function pickProfile(id, { claude } = {}) {
   const all = loadProfiles();
   if (id) {
     const p = all.find((x) => x.id === id);
-    if (!p) throw new Error(`Ukjent profil: ${id}`);
-    if (claude && !p.claude) throw new Error(`Profilen «${p.name}» starter ikke Claude`);
+    if (!p) throw new Error(`Unknown profile: ${id}`);
+    if (claude && !p.claude) throw new Error(`Profile "${p.name}" does not start Claude`);
     return p;
   }
   return (claude ? all.find((p) => p.claude) : all[0]) || DEFAULT_PROFILES.map(clean)[0];

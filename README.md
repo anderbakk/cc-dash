@@ -85,7 +85,7 @@ update never ends your sessions.
 
 ## Profiles
 
-"+ Ny sesjon" starts a session from a profile. Out of the box there are two:
+"+ New session" starts a session from a profile. Out of the box there are two:
 **Claude** and **Terminal** (a plain shell, no Claude). Add your own under
 `profiles` in `~/.cc-dash/config.json`; your list replaces the defaults, so
 keep the two if you want them:
@@ -112,9 +112,9 @@ keep the two if you want them:
 | `color` | color of the tag and a stripe on its sessions: `red`, `orange`, `yellow`, `green`, `blue`, `purple`, `pink`, `gray` or a hex code | `gray` when `tag` is set |
 
 Changes apply right away, no restart needed. When you continue a session with
-"Fortsett her", the profile it was started with is used again, and you can
-pick another one. A plain terminal has no transcript: it shows under "Kjører
-her" while it is open and is gone once you exit it. With a POSIX shell,
+"Continue here", the profile it was started with is used again, and you can
+pick another one. A plain terminal has no transcript: it shows under "Running
+here" while it is open and is gone once you exit it. With a POSIX shell,
 variables exported by `init` carry over into the plain shell, but functions
 and aliases it defines do not.
 
@@ -181,7 +181,8 @@ browser. For remote access, use e.g. Tailscale or an SSH tunnel.
 ## Tips
 
 - **Shift+Enter** gives a new line in Claude's prompt.
-- The UI is in Norwegian for now.
+- The UI is in English or Norwegian. It follows the browser language; switch
+  with the button at the bottom of the sidebar.
 
 ## Known limitations
 

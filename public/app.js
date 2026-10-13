@@ -4,6 +4,7 @@ import { WebLinksAddon } from '/vendor/addon-web-links.mjs';
 import { SearchAddon } from '/vendor/addon-search.mjs';
 import { Unicode11Addon } from '/vendor/addon-unicode11.mjs';
 import { marked } from '/vendor/marked.esm.js';
+import { t as tr, setLang, getLang, locale } from '/i18n.js';
 
 const $ = (sel) => document.querySelector(sel);
 const POLL_MS = 2000;
@@ -38,7 +39,7 @@ const state = {
   filesPath: {}, // `${session key}:${root id}` -> current dir
   openRoots: new Set(), // `${session key}:${root id}` of read-only folders expanded under Diff
   preview: null, // { key, root, path }
-  resumeProfile: {}, // session key -> profile id picked for "Fortsett her"
+  resumeProfile: {}, // session key -> profile id picked for "Continue here"
   refsFilter: '',
   terms: new Map(), // managedId -> { term, fit, ws, el, exited }
   lastDiffAt: 0,
@@ -53,10 +54,10 @@ function esc(s) {
 function ago(t) {
   if (!t) return '';
   const s = Math.max(0, (Date.now() - t) / 1000);
-  if (s < 60) return 'nå';
-  if (s < 3600) return `${Math.floor(s / 60)} min`;
-  if (s < 86400) return `${Math.floor(s / 3600)} t`;
-  return `${Math.floor(s / 86400)} d`;
+  if (s < 60) return tr('time.now');
+  if (s < 3600) return tr('time.min', Math.floor(s / 60));
+  if (s < 86400) return tr('time.hours', Math.floor(s / 3600));
+  return tr('time.days', Math.floor(s / 86400));
 }
 
 function money(v, incomplete) {
@@ -90,26 +91,24 @@ const tagAttrs = (s) => (tagColor(s) ? ` tagged" style="--tag:${esc(tagColor(s))
 function profileBadge(s) {
   const p = profileOf(s);
   let html = '';
-  if (p?.tag) html += `<span class="profile tagged" style="--tag:${esc(tagColor(s))}" title="Profil: ${esc(p.name)}">${esc(p.tag)}</span>`;
+  if (p?.tag) html += `<span class="profile tagged" style="--tag:${esc(tagColor(s))}" title="${esc(tr('profile.title', p.name))}">${esc(p.tag)}</span>`;
   else if (p && !s.shell && p !== profiles().find((x) => x.claude)) html += `<span class="profile">${esc(p.name)}</span>`;
   if (s.shell) html += '<span class="profile">terminal</span>';
   return html;
 }
 
-const STATE_LABEL ={ working: 'jobber', waiting: 'venter på deg', idle: 'din tur', ended: 'avsluttet' };
-
-// How long a session has been waiting for the user: 0:42, 12:05, 1 t 20 min.
+// How long a session has been waiting for the user: 0:42, 12:05, 1 h 20 min.
 function waited(t) {
   const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
   if (s < 3600) return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-  return `${Math.floor(s / 3600)} t ${Math.floor((s % 3600) / 60)} min`;
+  return tr('time.hoursMin', Math.floor(s / 3600), Math.floor((s % 3600) / 60));
 }
 
 function stateHtml(s) {
   if (!s.state || s.state === 'ended') return '';
-  const label = s.state === 'working' && s.stateDetail ? `jobber · ${s.stateDetail}` : STATE_LABEL[s.state];
+  const label = s.state === 'working' && s.stateDetail ? tr('state.workingOn', s.stateDetail) : tr(`state.${s.state}`);
   const timer = (s.state === 'idle' || s.state === 'waiting') && s.stateAt
-    ? ` · <span class="since" data-since="${s.stateAt}" title="Har ventet på deg siden ${esc(new Date(s.stateAt).toLocaleTimeString())}">${waited(s.stateAt)}</span>`
+    ? ` · <span class="since" data-since="${s.stateAt}" title="${esc(tr('state.waitingSince', new Date(s.stateAt).toLocaleTimeString()))}">${waited(s.stateAt)}</span>`
     : '';
   return `<span class="state s-${s.state}"><span class="dot"></span>${esc(label)}${timer}</span>`;
 }
@@ -123,7 +122,7 @@ async function api(path, opts = {}) {
   const res = await fetch(path, { ...opts, headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) } });
   const type = res.headers.get('content-type') || '';
   const body = type.includes('json') ? await res.json() : await res.text();
-  if (!res.ok) throw new Error(body?.error || res.statusText);
+  if (!res.ok) throw Object.assign(new Error(body?.error || res.statusText), { status: res.status });
   return body;
 }
 
@@ -154,7 +153,7 @@ function placeIn(s) {
 }
 
 function itemHtml(s, byFolder) {
-  const title = s.title || (s.running ? 'Ny sesjon' : '(uten tittel)');
+  const title = s.title || tr(s.running ? 'session.new' : 'session.untitled');
   const place = byFolder ? placeIn(s) : s.project || '';
   const meta = [place && esc(place), s.gitBranch && `⎇ ${esc(s.gitBranch)}`].filter(Boolean).join(' · ');
   return `<div class="item${s.key === state.selected ? ' selected' : ''}${tagAttrs(s)}" data-key="${esc(s.key)}" role="button" tabindex="0">
@@ -162,8 +161,8 @@ function itemHtml(s, byFolder) {
     <div class="item-meta"><span class="grow" title="${esc(s.cwd)}">${profileBadge(s)}${meta}</span><span class="cost">${money(s.costUsd, s.costIncomplete)}</span></div>
     <div class="item-sub"><span class="grow">${stateHtml(s) || esc(s.lastPrompt || '')}</span><span>${ago(s.lastAt)}</span></div>
     <div class="item-actions">
-      <button class="more" data-menu="${esc(s.key)}" title="Flere valg" aria-haspopup="menu">⋯</button>
-      ${s.running ? `<button class="kill" data-kill="${esc(s.managedId)}" title="Avslutt sesjonen">×</button>` : ''}
+      <button class="more" data-menu="${esc(s.key)}" title="${esc(tr('session.more'))}" aria-haspopup="menu">⋯</button>
+      ${s.running ? `<button class="kill" data-kill="${esc(s.managedId)}" title="${esc(tr('session.kill'))}">×</button>` : ''}
     </div>
   </div>`;
 }
@@ -177,20 +176,20 @@ function folderGroups(list) {
   const groups = new Map();
   for (const s of list) {
     const k = s.projectRoot || '';
-    if (!groups.has(k)) groups.set(k, { key: k, label: s.projectName || '(ukjent mappe)', title: s.projectRoot || '', items: [] });
+    if (!groups.has(k)) groups.set(k, { key: k, label: s.projectName || tr('side.unknownFolder'), title: s.projectRoot || '', items: [] });
     groups.get(k).items.push(s);
   }
   const live = (g) => g.items.some(isLive);
   const last = (g) => Math.max(...g.items.map((s) => s.lastAt || 0));
   return [...groups.values()].sort((a, b) =>
-    live(b) - live(a) || (live(a) ? a.label.localeCompare(b.label, 'nb', { sensitivity: 'base' }) : last(b) - last(a)));
+    live(b) - live(a) || (live(a) ? a.label.localeCompare(b.label, locale(), { sensitivity: 'base' }) : last(b) - last(a)));
 }
 
 function statusGroups(list) {
   return [
-    { key: 'running', label: 'Kjører her', items: list.filter((s) => s.running) },
-    { key: 'external', label: 'Åpne i andre terminaler', items: list.filter((s) => s.external) },
-    { key: 'recent', label: 'Nylige', items: list.filter((s) => !isLive(s)) },
+    { key: 'running', label: tr('side.runningHere'), items: list.filter((s) => s.running) },
+    { key: 'external', label: tr('side.external'), items: list.filter((s) => s.external) },
+    { key: 'recent', label: tr('side.recent'), items: list.filter((s) => !isLive(s)) },
   ].filter((g) => g.items.length);
 }
 
@@ -207,23 +206,24 @@ function renderSidebar() {
     if (byFolder) {
       html += `<button class="group-label group-toggle" data-group="${esc(g.key)}" title="${esc(g.title)}" aria-expanded="${!collapsed}">
         <span class="chev">${collapsed ? '▸' : '▾'}</span><span class="grow">${esc(g.label)}</span>
-        ${liveCount ? `<span class="live-count">${liveCount} aktiv${liveCount > 1 ? 'e' : ''}</span>` : ''}<span title="${g.items.length} sesjoner">${g.items.length}</span></button>`;
+        ${liveCount ? `<span class="live-count">${esc(tr('side.groupActive', liveCount))}</span>` : ''}<span title="${esc(tr('side.groupCount', g.items.length))}">${g.items.length}</span></button>`;
     } else {
-      html += `<div class="group-label">${g.label}</div>`;
+      html += `<div class="group-label">${esc(g.label)}</div>`;
     }
     if (!collapsed) html += g.items.map((s) => itemHtml(s, byFolder)).join('');
   }
-  $('#session-list').innerHTML = html || '<div class="panel-msg">Ingen sesjoner funnet.</div>';
-  $('#group-btn').textContent = byFolder ? '⇅ Mappe' : '⇅ Status';
-  $('#group-btn').title = byFolder ? 'Gruppert etter mappe. Klikk for å gruppere etter status.' : 'Gruppert etter status. Klikk for å gruppere etter mappe.';
+  $('#session-list').innerHTML = html || `<div class="panel-msg">${tr('side.none')}</div>`;
+  $('#group-btn').textContent = tr(byFolder ? 'side.byFolder' : 'side.byStatus');
+  $('#group-btn').title = tr(byFolder ? 'side.byFolderTitle' : 'side.byStatusTitle');
 
   const live = state.sessions.filter((s) => s.running || s.external);
   const total = live.reduce((sum, s) => sum + (s.costUsd || 0), 0);
-  let foot = `${live.length} aktive${total ? ` · ${money(total)}` : ''} · ${state.info.host === 'tmux' ? 'tmux' : 'pty'}`;
-  if (state.info.hooks === false) foot += `<br>Live status: kjør <code>npm run setup</code>`;
+  let foot = `${tr('side.active', live.length)}${total ? ` · ${money(total)}` : ''} · ${state.info.host === 'tmux' ? 'tmux' : 'pty'}`;
+  if (state.info.hooks === false) foot += `<br>${tr('side.hooks')}`;
   else if (canNotify && Notification.permission === 'default') {
-    foot += `<br><button id="notify-btn" class="link-btn">Slå på varsler</button> når en sesjon venter på deg`;
+    foot += `<br>${tr('side.notify')}`;
   }
+  foot += `<br><button id="lang-btn" class="link-btn" title="${esc(tr('lang.switchTitle'))}">${esc(tr('lang.switch'))}</button>`;
   $('#side-foot').innerHTML = foot;
 }
 
@@ -233,7 +233,7 @@ $('#session-list').addEventListener('click', (e) => {
     e.stopPropagation();
     if (!kill.classList.contains('armed')) {
       kill.classList.add('armed');
-      kill.textContent = 'avslutt?';
+      kill.textContent = tr('session.killConfirm');
       setTimeout(() => {
         kill.classList.remove('armed');
         kill.textContent = '×';
@@ -303,11 +303,11 @@ function openMenu(key, at) {
   const claudeP = siblingProfile(s, true);
   const shellP = siblingProfile(s, false);
   const items = [
-    claudeP && `<button role="menuitem" data-act="claude">Ny Claude-sesjon her<span class="hint">${esc(claudeP.name)}</span></button>`,
-    shellP && `<button role="menuitem" data-act="shell">Ny terminal her<span class="hint">${esc(shellP.name)}</span></button>`,
-    `<button role="menuitem" data-act="pick">Ny sesjon her med annen profil…</button>`,
+    claudeP && `<button role="menuitem" data-act="claude">${esc(tr('menu.claude'))}<span class="hint">${esc(claudeP.name)}</span></button>`,
+    shellP && `<button role="menuitem" data-act="shell">${esc(tr('menu.shell'))}<span class="hint">${esc(shellP.name)}</span></button>`,
+    `<button role="menuitem" data-act="pick">${esc(tr('menu.pick'))}</button>`,
     '<hr>',
-    `<button role="menuitem" data-act="copy">Kopier sti<span class="hint">${esc(shortPath(s.cwd))}</span></button>`,
+    `<button role="menuitem" data-act="copy">${esc(tr('menu.copy'))}<span class="hint">${esc(shortPath(s.cwd))}</span></button>`,
   ];
   menu.innerHTML = items.filter(Boolean).join('');
   menu.dataset.key = key;
@@ -380,16 +380,16 @@ function renderHead(s) {
   const color = tagColor(s);
   $('#main-head').classList.toggle('tagged', !!color);
   if (color) $('#main-head').style.setProperty('--tag', color);
-  $('#head-title').textContent = s.title || (s.running ? 'Ny sesjon' : '(uten tittel)');
+  $('#head-title').textContent = s.title || tr(s.running ? 'session.new' : 'session.untitled');
   const extra = (state.roots[s.key] || []).filter((r) => !r.primary && r.writes);
   const meta = [
     profileBadge(s),
     s.cwd &&`<span class="path" title="${esc(s.cwd)}">${esc(shortPath(s.cwd))}</span>`,
-    extra.length && `<span title="Sesjonen har også endret filer i:\n${esc(extra.map((r) => r.path).join('\n'))}">+ ${esc(extra.map((r) => r.name).join(', '))}</span>`,
+    extra.length && `<span title="${esc(tr('head.alsoChanged', extra.map((r) => r.path).join('\n')))}">+ ${esc(extra.map((r) => r.name).join(', '))}</span>`,
     s.gitBranch && `<span>⎇ ${esc(s.gitBranch)}</span>`,
     s.model && `<span>${esc(s.model)}</span>`,
-    s.costUsd && `<span title="Beregnet fra tokenbruk i transkriptet (API-listepris)">${money(s.costUsd, s.costIncomplete)}</span>`,
-    s.contextPct != null && `<span>${Math.round(s.contextPct)}% kontekst</span>`,
+    s.costUsd && `<span title="${esc(tr('head.costTitle'))}">${money(s.costUsd, s.costIncomplete)}</span>`,
+    s.contextPct != null && `<span>${esc(tr('head.context', Math.round(s.contextPct)))}</span>`,
     stateHtml(s),
   ].filter(Boolean);
   $('#head-meta').innerHTML = meta.join('');
@@ -420,22 +420,22 @@ function renderDetail(s) {
   const claudeProfiles = profiles().filter((p) => p.claude);
   const chosen = [state.resumeProfile[s.key], s.profileId].find((id) => claudeProfiles.some((p) => p.id === id)) || claudeProfiles[0]?.id;
   const picker = claudeProfiles.length > 1 && (canResume || s.external)
-    ? `<select id="resume-profile" class="profile-select" title="Profil">${claudeProfiles.map((p) => `<option value="${esc(p.id)}"${p.id === chosen ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`
+    ? `<select id="resume-profile" class="profile-select" title="${esc(tr('detail.profile'))}">${claudeProfiles.map((p) => `<option value="${esc(p.id)}"${p.id === chosen ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`
     : '';
   $('#detail').innerHTML = `
-    <h2>${esc(s.title || '(uten tittel)')}</h2>
+    <h2>${esc(s.title || tr('session.untitled'))}</h2>
     ${s.lastPrompt ? `<div class="prompt">${esc(s.lastPrompt)}</div>` : ''}
     <dl>
-      <dt>Mappe</dt><dd>${esc(s.cwd || '–')}</dd>
-      <dt>Sesjon</dt><dd>${esc(s.key)}</dd>
-      ${s.model ? `<dt>Modell</dt><dd>${esc(s.model)}</dd>` : ''}
-      ${s.costUsd ? `<dt>Pris</dt><dd>${money(s.costUsd, s.costIncomplete)}</dd>` : ''}
-      ${s.startedAt ? `<dt>Startet</dt><dd>${new Date(s.startedAt).toLocaleString()}</dd>` : ''}
-      ${s.lastAt ? `<dt>Sist aktiv</dt><dd>${new Date(s.lastAt).toLocaleString()}</dd>` : ''}
+      <dt>${tr('detail.folder')}</dt><dd>${esc(s.cwd || '–')}</dd>
+      <dt>${tr('detail.session')}</dt><dd>${esc(s.key)}</dd>
+      ${s.model ? `<dt>${tr('detail.model')}</dt><dd>${esc(s.model)}</dd>` : ''}
+      ${s.costUsd ? `<dt>${tr('detail.cost')}</dt><dd>${money(s.costUsd, s.costIncomplete)}</dd>` : ''}
+      ${s.startedAt ? `<dt>${tr('detail.started')}</dt><dd>${new Date(s.startedAt).toLocaleString()}</dd>` : ''}
+      ${s.lastAt ? `<dt>${tr('detail.lastActive')}</dt><dd>${new Date(s.lastAt).toLocaleString()}</dd>` : ''}
     </dl>
-    ${canResume ? `${picker}<button class="btn primary" id="resume-btn">Fortsett her (claude --resume)</button>` : ''}
-    ${s.external ? `<p class="note">Denne sesjonen kjører i en annen terminal. Lukk den der først hvis du vil fortsette den her, så ikke to prosesser jobber i samme sesjon.</p>
-      ${picker}<button class="btn" id="resume-btn">Fortsett her likevel</button>` : ''}
+    ${canResume ? `${picker}<button class="btn primary" id="resume-btn">${tr('detail.resume')}</button>` : ''}
+    ${s.external ? `<p class="note">${tr('detail.externalNote')}</p>
+      ${picker}<button class="btn" id="resume-btn">${tr('detail.resumeAnyway')}</button>` : ''}
   `;
   // The detail view is redrawn on every poll; keep the pick.
   $('#resume-profile')?.addEventListener('change', (e) => (state.resumeProfile[s.key] = e.target.value));
@@ -538,7 +538,7 @@ function ensureTerm(id) {
     if (visibleTerm() !== t) return;
     // resultIndex is -1 when there are too many matches to number.
     $('#search-count').textContent = !$('#search-input').value ? ''
-      : !resultCount ? 'ingen treff' : resultIndex < 0 ? `${resultCount}+` : `${resultIndex + 1} / ${resultCount}`;
+      : !resultCount ? tr('search.none') : resultIndex < 0 ? `${resultCount}+` : `${resultIndex + 1} / ${resultCount}`;
   });
   term.onData((d) => send(t, { t: 'in', d }));
   term.onResize(({ cols, rows }) => send(t, { t: 'resize', c: cols, r: rows }));
@@ -574,7 +574,7 @@ function connect(t) {
 }
 
 function onExited(t) {
-  t.term.write('\r\n\x1b[2m[sesjonen er avsluttet]\x1b[0m\r\n');
+  t.term.write(`\r\n\x1b[2m${tr('term.ended')}\x1b[0m\r\n`);
   setTimeout(() => {
     disposeTerm(t.id);
     refresh();
@@ -621,7 +621,7 @@ function findInTerm(dir, incremental = false) {
   }
   const opts = { incremental, decorations: SEARCH_DECORATIONS };
   const found = dir > 0 ? t.search.findNext(q, opts) : t.search.findPrevious(q, opts);
-  if (!found) $('#search-count').textContent = 'ingen treff';
+  if (!found) $('#search-count').textContent = tr('search.none');
 }
 
 $('#search-input').addEventListener('input', () => findInTerm(1, true));
@@ -659,7 +659,7 @@ async function startSession(body) {
   }
 }
 
-// Opens "Ny sesjon", optionally filled in (from a session's menu).
+// Opens "New session", optionally filled in (from a session's menu).
 async function openNewDialog(prefill = {}) {
   const dlg = $('#new-dialog');
   $('#new-error').hidden = true;
@@ -667,7 +667,7 @@ async function openNewDialog(prefill = {}) {
   const sel = $('#new-profile');
   const want = prefill.profile || store.get('profile', null);
   sel.innerHTML = profiles()
-    .map((p) => `<option value="${esc(p.id)}"${p.id === want ? ' selected' : ''}>${esc(p.name)}${p.claude ? '' : ' (terminal)'}</option>`)
+    .map((p) => `<option value="${esc(p.id)}"${p.id === want ? ' selected' : ''}>${esc(p.name)}${p.claude ? '' : tr('new.terminal')}</option>`)
     .join('');
   const prof = profiles().find((p) => p.id === sel.value);
   $('#new-cwd').value = prefill.cwd || prof?.cwd || cur?.cwd || '';
@@ -678,7 +678,7 @@ async function openNewDialog(prefill = {}) {
   try {
     const { dirs } = await api('/api/dirs');
     $('#recent-dirs').innerHTML = dirs.map((d) => `<button type="button" data-dir="${esc(d)}">${esc(shortPath(d))}</button>`).join('')
-      || '<div class="panel-msg">Ingen ennå</div>';
+      || `<div class="panel-msg">${tr('new.recentNone')}</div>`;
   } catch {}
 }
 $('#new-btn').addEventListener('click', () => openNewDialog());
@@ -744,7 +744,7 @@ async function renderPanel() {
   const s = current();
   const body = $('#panel-body');
   if (!s || !s.cwd) {
-    body.innerHTML = '<div class="panel-msg">Velg en sesjon.</div>';
+    body.innerHTML = `<div class="panel-msg">${tr('panel.pick')}</div>`;
     return;
   }
   const key = s.key;
@@ -776,7 +776,7 @@ async function renderDiff(s, body) {
     if (changedIn(r)) html += `<section class="root"><div class="root-head" title="${esc(r.path)}">${head}</div>${rootDiffHtml(r, diffs[i])}</section>`;
     else {
       html += `<details class="root" data-root-toggle="${esc(r.id)}"${isOpen(r) ? ' open' : ''}>
-        <summary class="root-head" title="${esc(r.path)}">${head} <span class="muted">· bare lest fra</span></summary>
+        <summary class="root-head" title="${esc(r.path)}">${head} <span class="muted">${tr('diff.readOnly')}</span></summary>
         ${isOpen(r) ? rootDiffHtml(r, diffs[i]) : ''}</details>`;
     }
   });
@@ -791,7 +791,7 @@ function rootDiffHtml(r, d) {
 // A folder without git: the files the session wrote there, newest first.
 function writtenHtml(r) {
   const files = r.written || [];
-  let html = `<div class="diff-head">Ikke et git-repo${files.length ? ` · ${files.length} ${files.length === 1 ? 'fil' : 'filer'} endret i denne sesjonen` : ''}</div>`;
+  let html = `<div class="diff-head">${tr('diff.notGit')}${files.length ? ` · ${tr('diff.written', files.length)}` : ''}</div>`;
   for (const f of files) {
     html += `<button class="file-row" data-open="${esc(f.path)}"><span class="icon"></span><span class="grow">${esc(f.path)}</span><span class="badge">${ago(f.at)}</span></button>`;
   }
@@ -799,11 +799,11 @@ function writtenHtml(r) {
 }
 
 function diffHtml(d) {
-  if (!d.repo) return '<div class="panel-msg">Mappen er ikke et git-repo.</div>';
-  if (!d.files.length) return `<div class="diff-head">⎇ ${esc(d.branch)} · ingen endringer</div>`;
+  if (!d.repo) return `<div class="panel-msg">${tr('diff.notRepo')}</div>`;
+  if (!d.files.length) return `<div class="diff-head">⎇ ${esc(d.branch)} · ${tr('diff.noChanges')}</div>`;
   const untracked = d.files.filter((f) => f.status === '??');
   const blocks = d.diff.split(/^(?=diff --git )/m).filter((b) => b.startsWith('diff --git'));
-  let html = `<div class="diff-head">⎇ ${esc(d.branch)} · ${d.files.length} filer endret</div>`;
+  let html = `<div class="diff-head">⎇ ${esc(d.branch)} · ${tr('diff.changed', d.files.length)}</div>`;
   const toCwd = (f) => (d.prefix ? `${d.prefix}/${f}` : f);
   let lines = 0;
   for (const b of blocks) {
@@ -813,7 +813,7 @@ function diffHtml(d) {
     const rows = b.split('\n');
     const start = rows.findIndex((r) => r.startsWith('@@'));
     let body = '';
-    if (start < 0) body = '<div class="hunk">(binærfil eller kun modusendring)</div>';
+    if (start < 0) body = `<div class="hunk">${tr('diff.binary')}</div>`;
     else {
       for (const r of rows.slice(start)) {
         if (++lines > 20000) break;
@@ -825,10 +825,10 @@ function diffHtml(d) {
       <span class="st st-${esc(f.status || 'M')}">${esc(f.status || 'M')}</span>
       <span class="grow">${esc(file)}</span>
       <span class="badge"><span class="a">+${f.add ?? 0}</span> <span class="d">−${f.del ?? 0}</span></span>
-      <a data-open="${esc(toCwd(file))}">vis</a></summary><div class="diff-lines">${body}</div></details>`;
+      <a data-open="${esc(toCwd(file))}">${tr('diff.view')}</a></summary><div class="diff-lines">${body}</div></details>`;
   }
   if (untracked.length) {
-    html += `<div class="group-label" style="padding:12px">Nye filer (ikke i git ennå)</div>`;
+    html += `<div class="group-label" style="padding:12px">${tr('diff.untracked')}</div>`;
     for (const f of untracked) {
       html += `<button class="file-row" data-open="${esc(toCwd(f.path))}"><span class="st st-??">??</span><span class="grow">${esc(f.path)}</span></button>`;
     }
@@ -847,7 +847,7 @@ async function renderFiles(s, body) {
   parts.forEach((p, i) => (crumbs += ` / <a data-dir="${esc(parts.slice(0, i + 1).join('/'))}">${esc(p)}</a>`));
   let html = '';
   if (roots.length > 1) {
-    html += `<div class="roots">${roots.map((r) => `<button class="chip${r.id === root.id ? ' active' : ''}" data-pick-root="${esc(r.id)}" title="${esc(r.path)}">${esc(r.name)}${changedIn(r) ? '' : ' <span class="muted">(lest)</span>'}</button>`).join('')}</div>`;
+    html += `<div class="roots">${roots.map((r) => `<button class="chip${r.id === root.id ? ' active' : ''}" data-pick-root="${esc(r.id)}" title="${esc(r.path)}">${esc(r.name)}${changedIn(r) ? '' : ` <span class="muted">${tr('files.read')}</span>`}</button>`).join('')}</div>`;
   }
   html += `<div data-root="${esc(root.id)}"><div class="crumbs">${crumbs}</div>`;
   if (d.path) html += `<button class="file-row" data-dir="${esc(parts.slice(0, -1).join('/'))}"><span class="icon">↑</span><span class="grow">..</span></button>`;
@@ -861,12 +861,11 @@ async function renderFiles(s, body) {
 }
 
 const REF_GROUPS = [
-  ['Pull requests', (r) => r.kind === 'pr'],
-  ['Issues og work items', (r) => r.kind === 'issue' || r.kind === 'workitem'],
-  ['Commits', (r) => r.kind === 'commit'],
-  ['Lenker', (r) => r.kind === 'url'],
+  ['refs.prs', (r) => r.kind === 'pr'],
+  ['refs.issues', (r) => r.kind === 'issue' || r.kind === 'workitem'],
+  ['refs.commits', (r) => r.kind === 'commit'],
+  ['refs.links', (r) => r.kind === 'url'],
 ];
-const REF_SOURCE = { user: 'deg', claude: 'Claude', command: 'kommando' };
 const REF_KIND = { pr: 'PR', issue: 'Issue', workitem: 'Work item' };
 
 function refHtml(r) {
@@ -884,9 +883,9 @@ function refHtml(r) {
   } else {
     main = `${link(`${REF_KIND[r.kind]} ${esc(r.label)}`)}${r.title ? ` <span class="ref-text">${esc(r.title)}</span>` : ''}`;
   }
-  const when = `${REF_SOURCE[r.source] || ''}${r.lastAt ? ` · ${ago(r.lastAt)}` : ''}${r.count > 1 ? ` · ${r.count}×` : ''}`;
+  const when = `${r.source ? tr(`refs.src.${r.source}`) : ''}${r.lastAt ? ` · ${ago(r.lastAt)}` : ''}${r.count > 1 ? ` · ${r.count}×` : ''}`;
   return `<div class="ref-row">
-    <div class="ref-main"><span class="grow">${main}</span><button class="btn small" data-copy="${esc(copy)}" title="Kopier ${esc(copy)}">Kopier</button></div>
+    <div class="ref-main"><span class="grow">${main}</span><button class="btn small" data-copy="${esc(copy)}" title="${esc(tr('refs.copyTitle', copy))}">${tr('refs.copy')}</button></div>
     <div class="ref-sub"><span class="grow" title="${esc(sub || '')}">${esc(sub || '')}</span><span>${esc(when)}</span></div>
   </div>`;
 }
@@ -897,10 +896,10 @@ function renderRefList(refs) {
   let html = '';
   for (const [label, test] of REF_GROUPS) {
     const items = refs.filter((r) => test(r) && match(r));
-    if (items.length) html += `<div class="group-label ref-group">${label} <span>${items.length}</span></div>${items.map(refHtml).join('')}`;
+    if (items.length) html += `<div class="group-label ref-group">${tr(label)} <span>${items.length}</span></div>${items.map(refHtml).join('')}`;
   }
   if (html) return html;
-  return `<div class="panel-msg">${refs.length ? 'Ingen treff.' : 'Ingen lenker, PR-er, work items eller commits i denne samtalen ennå.'}</div>`;
+  return `<div class="panel-msg">${tr(refs.length ? 'refs.noMatch' : 'refs.none')}</div>`;
 }
 
 async function renderRefs(s, body) {
@@ -912,7 +911,7 @@ async function renderRefs(s, body) {
     $('#refs-list').innerHTML = renderRefList(d.refs);
     return;
   }
-  body.innerHTML = `<div class="crumbs"><input id="refs-filter" data-key="${esc(s.key)}" type="search" placeholder="Filtrer lenker, PR-er, work items, commits…" value="${esc(state.refsFilter)}" autocomplete="off" spellcheck="false"></div>
+  body.innerHTML = `<div class="crumbs"><input id="refs-filter" data-key="${esc(s.key)}" type="search" placeholder="${esc(tr('refs.filter'))}" value="${esc(state.refsFilter)}" autocomplete="off" spellcheck="false"></div>
     <div id="refs-list">${renderRefList(d.refs)}</div>`;
 }
 
@@ -932,7 +931,7 @@ const MD_STYLE = `<style>
 async function renderPreview(s, body) {
   const pv = state.preview;
   if (!pv || pv.key !== s.key) {
-    body.innerHTML = '<div class="panel-msg">Velg en fil under <b>Filer</b> eller <b>Diff</b> for å forhåndsvise den.</div>';
+    body.innerHTML = `<div class="panel-msg">${tr('preview.pick')}</div>`;
     return;
   }
   const url = rawUrl(s.key, pv.root, pv.path);
@@ -941,15 +940,15 @@ async function renderPreview(s, body) {
   const isHtml = e === 'html' || e === 'htm';
   const rootName = pv.root !== 'main' && (state.roots[s.key] || []).find((r) => r.id === pv.root)?.name;
   const bar = `<div class="preview-bar"><span class="grow">${rootName ? `${esc(rootName)} / ` : ''}${esc(pv.path)}</span>
-    ${isMd || isHtml ? `<button class="btn small" id="src-btn">${pv.source ? 'Vis rendret' : 'Vis kilde'}</button>` : ''}
-    <a href="${esc(url)}" target="_blank" rel="noopener">Åpne i ny fane ↗</a></div>`;
+    ${isMd || isHtml ? `<button class="btn small" id="src-btn">${tr(pv.source ? 'preview.rendered' : 'preview.source')}</button>` : ''}
+    <a href="${esc(url)}" target="_blank" rel="noopener">${tr('preview.newTab')}</a></div>`;
 
   if (isHtml && !pv.source) {
     body.innerHTML = `${bar}<iframe class="preview-frame" sandbox="allow-scripts allow-forms" src="${esc(url)}"></iframe>`;
   } else if (IMAGE.has(e)) {
     body.innerHTML = `${bar}<img class="preview-img" src="${esc(url)}" alt="${esc(pv.path)}">`;
   } else if (e === 'pdf') {
-    body.innerHTML = `${bar}<div class="panel-msg">PDF åpnes best i ny fane.</div>`;
+    body.innerHTML = `${bar}<div class="panel-msg">${tr('preview.pdf')}</div>`;
   } else {
     const text = await api(`/api/sessions/${s.key}/file?root=${pv.root}&path=${encodeURIComponent(pv.path)}`).then((t) => (typeof t === 'string' ? t : JSON.stringify(t, null, 2)));
     if (state.selected !== s.key || state.tab !== 'preview') return;
@@ -979,8 +978,8 @@ $('#panel-body').addEventListener('click', (e) => {
   const copy = e.target.closest('[data-copy]');
   if (copy) {
     navigator.clipboard.writeText(copy.dataset.copy).then(() => {
-      copy.textContent = 'Kopiert ✓';
-      setTimeout(() => (copy.textContent = 'Kopier'), 1500);
+      copy.textContent = tr('refs.copied');
+      setTimeout(() => (copy.textContent = tr('refs.copy')), 1500);
     });
     return;
   }
@@ -1048,7 +1047,7 @@ let lastStates = null; // session key -> state, from the previous poll
 function notify(s, text) {
   if (!canNotify || Notification.permission !== 'granted') return;
   if (!document.hidden && s.key === state.selected) return;
-  const n = new Notification(s.title || s.project || 'Claude-sesjon', { body: text, tag: s.key });
+  const n = new Notification(s.title || s.project || tr('notify.session'), { body: text, tag: s.key });
   n.onclick = () => {
     window.focus();
     select(s.key);
@@ -1061,8 +1060,8 @@ function watchStates(sessions) {
     for (const s of sessions) {
       const before = lastStates.get(s.key);
       if (before === s.state) continue;
-      if (s.state === 'waiting') notify(s, 'Venter på deg');
-      else if (s.state === 'idle' && before === 'working') notify(s, 'Ferdig – din tur');
+      if (s.state === 'waiting') notify(s, tr('notify.waiting'));
+      else if (s.state === 'idle' && before === 'working') notify(s, tr('notify.done'));
     }
   }
   lastStates = new Map(sessions.map((s) => [s.key, s.state]));
@@ -1071,9 +1070,21 @@ function watchStates(sessions) {
 }
 
 $('#side-foot').addEventListener('click', (e) => {
+  if (e.target.closest('#lang-btn')) return switchLang();
   if (!e.target.closest('#notify-btn')) return;
   Notification.requestPermission().then(renderSidebar);
 });
+
+// ---- language --------------------------------------------------------------
+
+function switchLang() {
+  setLang(getLang() === 'no' ? 'en' : 'no');
+  store.set('lang', getLang());
+  closeMenu();
+  renderSidebar();
+  renderMain();
+  renderPanel();
+}
 
 // ---- polling ---------------------------------------------------------------
 
@@ -1082,7 +1093,7 @@ async function refresh() {
   try {
     data = await api('/api/sessions');
   } catch (e) {
-    if (String(e.message).includes('innlogget')) location.reload();
+    if (e.status === 401) location.reload();
     return;
   }
   const prev = current();
@@ -1108,6 +1119,7 @@ async function refresh() {
   if (state.panelOpen && state.tab === 'refs' && s && s.lastAt !== prev?.lastAt) renderPanel();
 }
 
+setLang(store.get('lang', null));
 setPanel(state.panelOpen);
 await refresh();
 renderMain();
