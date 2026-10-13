@@ -9,8 +9,12 @@
   },
   "scripts": {
     "start": "node server/index.js",
+    "launch": "node scripts/start.js",
+    "stop": "node scripts/stop.js",
     "setup": "node scripts/setup.js",
     "setup:remove": "node scripts/setup.js --remove",
+    "shortcut": "node scripts/shortcut.js",
+    "shortcut:remove": "node scripts/shortcut.js --remove",
     "test": "node --test"
   },
   "engines": {

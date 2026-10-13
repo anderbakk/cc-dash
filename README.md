@@ -52,6 +52,37 @@ The entries point at the full path of the node that ran `setup`, since `node`
 is often missing from the PATH that hooks are started with. Run `npm run setup`
 again if you move the repo or switch Node version.
 
+## Starting without a terminal
+
+`npm start` runs cc-dash in the terminal you start it from, and with node-pty
+(always on Windows) the sessions end when that terminal closes. To run it in
+the background instead:
+
+```bash
+npm run launch   # start in the background, or just open it if it already runs
+npm stop         # stop it (ends its node-pty sessions; continue them with --resume)
+```
+
+`launch` runs `npm ci` first whenever `package-lock.json` has changed, and
+writes the server's output to `~/.cc-dash/server.log`. Starting twice is
+harmless: a second `npm start` or `launch` opens the cc-dash that is already
+running.
+
+On Windows, make Start menu shortcuts for the same two:
+
+```bash
+npm run shortcut                    # "cc-dash" and "Stop cc-dash" in the Start menu
+npm run shortcut -- --autostart     # also start in the background when you log in
+npm run shortcut -- --auto-update   # pull the latest version on every start
+npm run shortcut:remove             # remove them again
+```
+
+With `--auto-update` (or `"autoUpdate": true` in `~/.cc-dash/config.json`),
+each start runs `git pull --ff-only` first, but only when you are on the
+default branch with nothing uncommitted; otherwise it says why and starts the
+version you have. It only happens when cc-dash is not already running, so an
+update never ends your sessions.
+
 ## Profiles
 
 "+ Ny sesjon" starts a session from a profile. Out of the box there are two:

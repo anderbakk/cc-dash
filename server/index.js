@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -9,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { MAX_PREVIEW, gitDiff, listDir, mimeFor, safeResolve } from './files.js';
 import { PtyHost, TmuxHost } from './hosts.js';
+import { COOKIE, HOST, PORT, findRunning, loginUrl, openBrowser } from './local.js';
 import { loadProfiles, pickProfile } from './profiles.js';
 import { repoFor, resolveRefs } from './refs.js';
 import { CONFIG_FILE, DATA_DIR, IS_WIN, SETTINGS_FILE, safeId, stripBom } from './paths.js';
@@ -19,10 +19,6 @@ const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PUBLIC = path.join(ROOT, 'public');
 const require = createRequire(import.meta.url);
 const pkgDir = (name) => path.dirname(require.resolve(`${name}/package.json`));
-
-const HOST = process.env.HOST || '127.0.0.1';
-const PORT = Number(process.env.PORT || 7420);
-const COOKIE = `ccdash_${PORT}`;
 
 // ---- config & auth ---------------------------------------------------------
 
@@ -171,6 +167,13 @@ async function handle(req, res) {
   if (req.method !== 'GET' && !originOk(req)) return send(res, 403, { error: 'Ugyldig origin' });
 
   try {
+    // Lets a second start, and scripts/start.js and stop.js, tell that this is
+    // cc-dash and that it takes their token.
+    if (p === '/api/ping' && req.method === 'GET') return send(res, 200, { app: 'cc-dash', pid: process.pid });
+    if (p === '/api/shutdown' && req.method === 'POST') {
+      send(res, 200, { ok: true, ended: host.killAll ? manager.managed.size : 0 });
+      return setImmediate(shutdown);
+    }
     if (p === '/api/sessions' && req.method === 'GET') {
       return send(res, 200, {
         sessions: manager.list(),
@@ -275,30 +278,27 @@ server.on('upgrade', (req, socket, head) => {
 
 // ---- start -----------------------------------------------------------------
 
-function openBrowser(url) {
-  const [cmd, args] = IS_WIN
-    ? ['cmd', ['/c', 'start', '', url]]
-    : process.platform === 'darwin'
-      ? ['open', [url]]
-      : ['xdg-open', [url]];
-  try {
-    spawn(cmd, args, { stdio: 'ignore', detached: true, windowsHide: true }).on('error', () => {}).unref();
-  } catch {}
-}
+const noOpen = Boolean(process.env.CC_DASH_NO_OPEN) || process.argv.includes('--no-open');
 
-server.on('error', (e) => {
+server.on('error', async (e) => {
+  // Starting twice is easy with a shortcut; if the port is held by our own
+  // cc-dash, show that one instead of failing.
+  if (e.code === 'EADDRINUSE' && (await findRunning(config.token))) {
+    console.log(`cc-dash is already running on port ${PORT}.`);
+    if (!noOpen) openBrowser(loginUrl(config.token));
+    process.exit(0);
+  }
   if (e.code === 'EADDRINUSE') console.error(`Port ${PORT} er i bruk. Start med en annen port, f.eks. PORT=7421 npm start`);
   else console.error(e);
   process.exit(1);
 });
 
 server.listen(PORT, HOST, () => {
-  const shown = HOST === '0.0.0.0' || HOST === '::' ? 'localhost' : HOST;
-  const url = `http://${shown}:${PORT}/?token=${config.token}`;
+  const url = loginUrl(config.token);
   console.log(`cc-dash kjører (${host.name === 'tmux' ? 'tmux: sesjoner overlever omstart' : 'pty: sesjoner lever så lenge cc-dash kjører'})`);
   console.log(`\n  ${url}\n`);
   if (!hooksInstalled()) console.log('Tips: kjør "npm run setup" for live status (jobber/venter) i sidebaren.\n');
-  if (!process.env.CC_DASH_NO_OPEN && !process.argv.includes('--no-open')) openBrowser(url);
+  if (!noOpen) openBrowser(url);
 });
 
 function shutdown() {
