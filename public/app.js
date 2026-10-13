@@ -29,10 +29,16 @@ const state = {
   info: {},
   selected: store.get('selected', null),
   filter: '',
+  groupBy: store.get('groupBy', 'folder'), // sidebar: 'folder' | 'status'
+  collapsed: new Set(store.get('collapsed', [])), // folder groups folded away
   panelOpen: store.get('panelOpen', false),
   tab: store.get('tab', 'diff'),
-  filesPath: {}, // session key -> current dir
-  preview: null, // { key, path }
+  roots: {}, // session key -> the folders it works in (cwd first), see folders.js
+  filesRoot: {}, // session key -> root id shown under Files
+  filesPath: {}, // `${session key}:${root id}` -> current dir
+  openRoots: new Set(), // `${session key}:${root id}` of read-only folders expanded under Diff
+  preview: null, // { key, root, path }
+  resumeProfile: {}, // session key -> profile id picked for "Fortsett her"
   refsFilter: '',
   terms: new Map(), // managedId -> { term, fit, ws, el, exited }
   lastDiffAt: 0,
@@ -64,7 +70,33 @@ function shortPath(p) {
   return p.replace(/^\/home\/[^/]+|^\/Users\/[^/]+|^[A-Za-z]:\\Users\\[^\\]+/, '~');
 }
 
-const STATE_LABEL = { working: 'jobber', waiting: 'venter på deg', idle: 'din tur', ended: 'avsluttet' };
+const profiles = () => state.info.profiles || [];
+
+const profileOf = (s) => (s?.profileId && profiles().find((x) => x.id === s.profileId)) || null;
+
+// The color of a session's profile tag, as a CSS value (see --tag-* in style.css).
+function tagColor(s) {
+  const p = profileOf(s);
+  if (!p?.tag && !p?.color) return null;
+  const c = p.color || 'gray';
+  return c.startsWith('#') ? c : `var(--tag-${c})`;
+}
+
+// For an element that should carry the profile's color stripe.
+const tagAttrs = (s) => (tagColor(s) ? ` tagged" style="--tag:${esc(tagColor(s))}` : '');
+
+// Marks the profile's tag, plain terminals, and Claude sessions started with
+// another profile than the default one.
+function profileBadge(s) {
+  const p = profileOf(s);
+  let html = '';
+  if (p?.tag) html += `<span class="profile tagged" style="--tag:${esc(tagColor(s))}" title="Profil: ${esc(p.name)}">${esc(p.tag)}</span>`;
+  else if (p && !s.shell && p !== profiles().find((x) => x.claude)) html += `<span class="profile">${esc(p.name)}</span>`;
+  if (s.shell) html += '<span class="profile">terminal</span>';
+  return html;
+}
+
+const STATE_LABEL ={ working: 'jobber', waiting: 'venter på deg', idle: 'din tur', ended: 'avsluttet' };
 
 // How long a session has been waiting for the user: 0:42, 12:05, 1 t 20 min.
 function waited(t) {
@@ -96,34 +128,94 @@ async function api(path, opts = {}) {
 }
 
 const current = () => state.sessions.find((s) => s.key === state.selected) || null;
-const rawUrl = (key, p) => `/raw/${state.info.token}/${key}/${p.split('/').map(encodeURIComponent).join('/')}`;
+const rawUrl = (key, root, p) => `/raw/${state.info.token}/${key}/${root}/${p.split('/').map(encodeURIComponent).join('/')}`;
+
+async function loadRoots(s) {
+  const { roots } = await api(`/api/sessions/${s.key}/roots`);
+  const before = JSON.stringify(state.roots[s.key]);
+  state.roots[s.key] = roots;
+  if (before !== JSON.stringify(roots) && state.selected === s.key) renderHead(s);
+  return roots;
+}
+
+// Folders the session changed something in. The rest it only looked at.
+const changedIn = (r) => r.primary || r.writes > 0;
 
 // ---- sidebar ---------------------------------------------------------------
 
+const isLive = (s) => s.running || s.external;
+
+// Where in its project a session runs: "Source/Server" for a subfolder of
+// the repo, nothing at the root.
+function placeIn(s) {
+  if (!s.cwd || !s.projectRoot) return '';
+  const rel = s.cwd.slice(s.projectRoot.length).replace(/^[\\/]+/, '');
+  return rel.replace(/\\/g, '/');
+}
+
+function itemHtml(s, byFolder) {
+  const title = s.title || (s.running ? 'Ny sesjon' : '(uten tittel)');
+  const place = byFolder ? placeIn(s) : s.project || '';
+  const meta = [place && esc(place), s.gitBranch && `⎇ ${esc(s.gitBranch)}`].filter(Boolean).join(' · ');
+  return `<div class="item${s.key === state.selected ? ' selected' : ''}${tagAttrs(s)}" data-key="${esc(s.key)}" role="button" tabindex="0">
+    <div class="item-title" title="${esc(title)}">${esc(title)}</div>
+    <div class="item-meta"><span class="grow" title="${esc(s.cwd)}">${profileBadge(s)}${meta}</span><span class="cost">${money(s.costUsd, s.costIncomplete)}</span></div>
+    <div class="item-sub"><span class="grow">${stateHtml(s) || esc(s.lastPrompt || '')}</span><span>${ago(s.lastAt)}</span></div>
+    <div class="item-actions">
+      <button class="more" data-menu="${esc(s.key)}" title="Flere valg" aria-haspopup="menu">⋯</button>
+      ${s.running ? `<button class="kill" data-kill="${esc(s.managedId)}" title="Avslutt sesjonen">×</button>` : ''}
+    </div>
+  </div>`;
+}
+
+// By folder: one group per repo (or plain folder). Groups with something
+// running come first, alphabetically: ordering them by activity would make
+// them jump around on every poll while Claude works. The rest follow by
+// latest activity. Inside a group the server's order holds: running here,
+// open elsewhere, then most recent.
+function folderGroups(list) {
+  const groups = new Map();
+  for (const s of list) {
+    const k = s.projectRoot || '';
+    if (!groups.has(k)) groups.set(k, { key: k, label: s.projectName || '(ukjent mappe)', title: s.projectRoot || '', items: [] });
+    groups.get(k).items.push(s);
+  }
+  const live = (g) => g.items.some(isLive);
+  const last = (g) => Math.max(...g.items.map((s) => s.lastAt || 0));
+  return [...groups.values()].sort((a, b) =>
+    live(b) - live(a) || (live(a) ? a.label.localeCompare(b.label, 'nb', { sensitivity: 'base' }) : last(b) - last(a)));
+}
+
+function statusGroups(list) {
+  return [
+    { key: 'running', label: 'Kjører her', items: list.filter((s) => s.running) },
+    { key: 'external', label: 'Åpne i andre terminaler', items: list.filter((s) => s.external) },
+    { key: 'recent', label: 'Nylige', items: list.filter((s) => !isLive(s)) },
+  ].filter((g) => g.items.length);
+}
+
 function renderSidebar() {
   const f = state.filter.toLowerCase();
-  const match = (s) => !f || [s.title, s.cwd, s.lastPrompt, s.gitBranch].some((v) => v && v.toLowerCase().includes(f));
-  const groups = [
-    ['Kjører her', state.sessions.filter((s) => s.running)],
-    ['Åpne i andre terminaler', state.sessions.filter((s) => s.external)],
-    ['Nylige', state.sessions.filter((s) => !s.running && !s.external)],
-  ];
+  const match = (s) => !f || [s.title, s.cwd, s.lastPrompt, s.gitBranch, s.projectName, profileOf(s)?.tag].some((v) => v && v.toLowerCase().includes(f));
+  const byFolder = state.groupBy === 'folder';
+  const list = state.sessions.filter(match);
   let html = '';
-  for (const [label, list] of groups) {
-    const items = list.filter(match);
-    if (!items.length) continue;
-    html += `<div class="group-label">${label}</div>`;
-    for (const s of items) {
-      const title = s.title || (s.running ? 'Ny sesjon' : '(uten tittel)');
-      html += `<div class="item${s.key === state.selected ? ' selected' : ''}" data-key="${esc(s.key)}" role="button" tabindex="0">
-        <div class="item-title" title="${esc(title)}">${esc(title)}</div>
-        <div class="item-meta"><span class="grow" title="${esc(s.cwd)}">${esc(s.project || '')}${s.gitBranch ? ` · ${esc(s.gitBranch)}` : ''}</span><span class="cost">${money(s.costUsd, s.costIncomplete)}</span></div>
-        <div class="item-sub"><span class="grow">${stateHtml(s) || esc(s.lastPrompt || '')}</span><span>${ago(s.lastAt)}</span></div>
-        ${s.running ? `<button class="kill" data-kill="${esc(s.managedId)}" title="Avslutt sesjonen">×</button>` : ''}
-      </div>`;
+  for (const g of byFolder ? folderGroups(list) : statusGroups(list)) {
+    // While filtering, show every hit even in collapsed groups.
+    const collapsed = byFolder && !f && state.collapsed.has(g.key);
+    const liveCount = g.items.filter(isLive).length;
+    if (byFolder) {
+      html += `<button class="group-label group-toggle" data-group="${esc(g.key)}" title="${esc(g.title)}" aria-expanded="${!collapsed}">
+        <span class="chev">${collapsed ? '▸' : '▾'}</span><span class="grow">${esc(g.label)}</span>
+        ${liveCount ? `<span class="live-count">${liveCount} aktiv${liveCount > 1 ? 'e' : ''}</span>` : ''}<span title="${g.items.length} sesjoner">${g.items.length}</span></button>`;
+    } else {
+      html += `<div class="group-label">${g.label}</div>`;
     }
+    if (!collapsed) html += g.items.map((s) => itemHtml(s, byFolder)).join('');
   }
   $('#session-list').innerHTML = html || '<div class="panel-msg">Ingen sesjoner funnet.</div>';
+  $('#group-btn').textContent = byFolder ? '⇅ Mappe' : '⇅ Status';
+  $('#group-btn').title = byFolder ? 'Gruppert etter mappe. Klikk for å gruppere etter status.' : 'Gruppert etter status. Klikk for å gruppere etter mappe.';
 
   const live = state.sessions.filter((s) => s.running || s.external);
   const total = live.reduce((sum, s) => sum + (s.costUsd || 0), 0);
@@ -151,16 +243,118 @@ $('#session-list').addEventListener('click', (e) => {
     api(`/api/sessions/${kill.dataset.kill}`, { method: 'DELETE' }).then(refresh, (err) => alertBox(err.message));
     return;
   }
+  const more = e.target.closest('[data-menu]');
+  if (more) {
+    e.stopPropagation();
+    return openMenu(more.dataset.menu, more.getBoundingClientRect());
+  }
+  const group = e.target.closest('[data-group]');
+  if (group) {
+    const k = group.dataset.group;
+    if (state.collapsed.has(k)) state.collapsed.delete(k);
+    else state.collapsed.add(k);
+    store.set('collapsed', [...state.collapsed]);
+    return renderSidebar();
+  }
   const item = e.target.closest('.item');
   if (item) select(item.dataset.key);
 });
+$('#session-list').addEventListener('contextmenu', (e) => {
+  const item = e.target.closest('.item');
+  if (!item) return;
+  e.preventDefault();
+  openMenu(item.dataset.key, { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY });
+});
 $('#session-list').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target.classList.contains('item')) select(e.target.dataset.key);
+  // Shift+F10 / the menu key, as in any list with context menus.
+  if ((e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) && e.target.classList.contains('item')) {
+    e.preventDefault();
+    openMenu(e.target.dataset.key, e.target.getBoundingClientRect());
+  }
 });
 $('#filter').addEventListener('input', (e) => {
   state.filter = e.target.value;
   renderSidebar();
 });
+$('#group-btn').addEventListener('click', () => {
+  state.groupBy = state.groupBy === 'folder' ? 'status' : 'folder';
+  store.set('groupBy', state.groupBy);
+  renderSidebar();
+});
+
+// ---- session menu ----------------------------------------------------------
+// Lives outside the list, which is redrawn on every poll.
+
+// The profile for "the same kind, but Claude" (or "but a plain terminal"):
+// the session's own profile if it is that kind, else one with the same tag,
+// else the default of that kind. A "Work" terminal thus gives "Work + Claude".
+function siblingProfile(s, claude) {
+  const p = profileOf(s);
+  const kind = profiles().filter((x) => x.claude === claude);
+  if (p && p.claude === claude) return p;
+  return (p?.tag && kind.find((x) => x.tag === p.tag)) || kind[0] || null;
+}
+
+function openMenu(key, at) {
+  const s = state.sessions.find((x) => x.key === key);
+  const menu = $('#item-menu');
+  if (!s || !s.cwd) return;
+  const claudeP = siblingProfile(s, true);
+  const shellP = siblingProfile(s, false);
+  const items = [
+    claudeP && `<button role="menuitem" data-act="claude">Ny Claude-sesjon her<span class="hint">${esc(claudeP.name)}</span></button>`,
+    shellP && `<button role="menuitem" data-act="shell">Ny terminal her<span class="hint">${esc(shellP.name)}</span></button>`,
+    `<button role="menuitem" data-act="pick">Ny sesjon her med annen profil…</button>`,
+    '<hr>',
+    `<button role="menuitem" data-act="copy">Kopier sti<span class="hint">${esc(shortPath(s.cwd))}</span></button>`,
+  ];
+  menu.innerHTML = items.filter(Boolean).join('');
+  menu.dataset.key = key;
+  menu.dataset.claude = claudeP?.id || '';
+  menu.dataset.shell = shellP?.id || '';
+  menu.hidden = false;
+  // Below the button, kept inside the window.
+  const w = menu.offsetWidth;
+  const h = menu.offsetHeight;
+  menu.style.left = `${Math.max(4, Math.min(at.right - w, innerWidth - w - 4))}px`;
+  menu.style.top = `${at.bottom + h + 4 > innerHeight ? Math.max(4, at.top - h - 4) : at.bottom + 4}px`;
+  menu.querySelector('button')?.focus();
+}
+
+function closeMenu() {
+  $('#item-menu').hidden = true;
+}
+
+$('#item-menu').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-act]');
+  if (!b) return;
+  const menu = $('#item-menu');
+  const s = state.sessions.find((x) => x.key === menu.dataset.key);
+  closeMenu();
+  if (!s) return;
+  const act = b.dataset.act;
+  if (act === 'copy') return navigator.clipboard.writeText(s.cwd);
+  if (act === 'pick') return openNewDialog({ cwd: s.cwd, profile: menu.dataset.claude });
+  const r = await startSession({ cwd: s.cwd, profile: menu.dataset[act] });
+  if (r !== true) alertBox(r);
+});
+$('#item-menu').addEventListener('keydown', (e) => {
+  const buttons = [...$('#item-menu').querySelectorAll('button')];
+  const i = buttons.indexOf(document.activeElement);
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    buttons[(i + (e.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length]?.focus();
+  }
+});
+document.addEventListener('pointerdown', (e) => {
+  if (!e.target.closest('#item-menu, [data-menu]')) closeMenu();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('#item-menu').hidden) closeMenu();
+});
+$('#session-list').addEventListener('scroll', closeMenu);
+addEventListener('resize', closeMenu);
 
 // ---- main area -------------------------------------------------------------
 
@@ -175,14 +369,23 @@ function select(key) {
   renderSidebar();
   renderMain();
   if (changed) renderPanel();
+  // For the header's "+ other folders", also when the panel is closed.
+  const s = current();
+  if (changed && s?.cwd && !state.panelOpen) loadRoots(s).catch(() => {});
 }
 
 function renderHead(s) {
   $('#main-head').hidden = !s;
   if (!s) return;
+  const color = tagColor(s);
+  $('#main-head').classList.toggle('tagged', !!color);
+  if (color) $('#main-head').style.setProperty('--tag', color);
   $('#head-title').textContent = s.title || (s.running ? 'Ny sesjon' : '(uten tittel)');
+  const extra = (state.roots[s.key] || []).filter((r) => !r.primary && r.writes);
   const meta = [
-    s.cwd && `<span class="path" title="${esc(s.cwd)}">${esc(shortPath(s.cwd))}</span>`,
+    profileBadge(s),
+    s.cwd &&`<span class="path" title="${esc(s.cwd)}">${esc(shortPath(s.cwd))}</span>`,
+    extra.length && `<span title="Sesjonen har også endret filer i:\n${esc(extra.map((r) => r.path).join('\n'))}">+ ${esc(extra.map((r) => r.name).join(', '))}</span>`,
     s.gitBranch && `<span>⎇ ${esc(s.gitBranch)}</span>`,
     s.model && `<span>${esc(s.model)}</span>`,
     s.costUsd && `<span title="Beregnet fra tokenbruk i transkriptet (API-listepris)">${money(s.costUsd, s.costIncomplete)}</span>`,
@@ -213,6 +416,12 @@ function renderMain() {
 
 function renderDetail(s) {
   const canResume = s.cwd && !s.external;
+  // Continue with the profile it was started with, unless picked otherwise.
+  const claudeProfiles = profiles().filter((p) => p.claude);
+  const chosen = [state.resumeProfile[s.key], s.profileId].find((id) => claudeProfiles.some((p) => p.id === id)) || claudeProfiles[0]?.id;
+  const picker = claudeProfiles.length > 1 && (canResume || s.external)
+    ? `<select id="resume-profile" class="profile-select" title="Profil">${claudeProfiles.map((p) => `<option value="${esc(p.id)}"${p.id === chosen ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`
+    : '';
   $('#detail').innerHTML = `
     <h2>${esc(s.title || '(uten tittel)')}</h2>
     ${s.lastPrompt ? `<div class="prompt">${esc(s.lastPrompt)}</div>` : ''}
@@ -224,11 +433,13 @@ function renderDetail(s) {
       ${s.startedAt ? `<dt>Startet</dt><dd>${new Date(s.startedAt).toLocaleString()}</dd>` : ''}
       ${s.lastAt ? `<dt>Sist aktiv</dt><dd>${new Date(s.lastAt).toLocaleString()}</dd>` : ''}
     </dl>
-    ${canResume ? `<button class="btn primary" id="resume-btn">Fortsett her (claude --resume)</button>` : ''}
+    ${canResume ? `${picker}<button class="btn primary" id="resume-btn">Fortsett her (claude --resume)</button>` : ''}
     ${s.external ? `<p class="note">Denne sesjonen kjører i en annen terminal. Lukk den der først hvis du vil fortsette den her, så ikke to prosesser jobber i samme sesjon.</p>
-      <button class="btn" id="resume-btn">Fortsett her likevel</button>` : ''}
+      ${picker}<button class="btn" id="resume-btn">Fortsett her likevel</button>` : ''}
   `;
-  $('#resume-btn')?.addEventListener('click', () => startSession({ cwd: s.cwd, resumeId: s.key }));
+  // The detail view is redrawn on every poll; keep the pick.
+  $('#resume-profile')?.addEventListener('change', (e) => (state.resumeProfile[s.key] = e.target.value));
+  $('#resume-btn')?.addEventListener('click', () => startSession({ cwd: s.cwd, resumeId: s.key, profile: $('#resume-profile')?.value }));
 }
 
 function alertBox(msg) {
@@ -441,17 +652,26 @@ async function startSession(body) {
     const r = await api('/api/sessions', { method: 'POST', body: JSON.stringify(body) });
     await refresh();
     select(r.key);
+    $('#session-list .item.selected')?.scrollIntoView({ block: 'nearest' });
     return true;
   } catch (e) {
     return e.message;
   }
 }
 
-$('#new-btn').addEventListener('click', async () => {
+// Opens "Ny sesjon", optionally filled in (from a session's menu).
+async function openNewDialog(prefill = {}) {
   const dlg = $('#new-dialog');
   $('#new-error').hidden = true;
   const cur = current();
-  $('#new-cwd').value = cur?.cwd || '';
+  const sel = $('#new-profile');
+  const want = prefill.profile || store.get('profile', null);
+  sel.innerHTML = profiles()
+    .map((p) => `<option value="${esc(p.id)}"${p.id === want ? ' selected' : ''}>${esc(p.name)}${p.claude ? '' : ' (terminal)'}</option>`)
+    .join('');
+  const prof = profiles().find((p) => p.id === sel.value);
+  $('#new-cwd').value = prefill.cwd || prof?.cwd || cur?.cwd || '';
+  markProfileSelect();
   $('#recent-dirs').innerHTML = '';
   dlg.showModal();
   $('#new-cwd').select();
@@ -460,7 +680,8 @@ $('#new-btn').addEventListener('click', async () => {
     $('#recent-dirs').innerHTML = dirs.map((d) => `<button type="button" data-dir="${esc(d)}">${esc(shortPath(d))}</button>`).join('')
       || '<div class="panel-msg">Ingen ennå</div>';
   } catch {}
-});
+}
+$('#new-btn').addEventListener('click', () => openNewDialog());
 $('#recent-dirs').addEventListener('click', (e) => {
   const b = e.target.closest('[data-dir]');
   if (b) $('#new-cwd').value = b.dataset.dir;
@@ -468,10 +689,27 @@ $('#recent-dirs').addEventListener('click', (e) => {
 $('#recent-dirs').addEventListener('dblclick', (e) => {
   if (e.target.closest('[data-dir]')) $('#new-form').requestSubmit();
 });
+// The picker takes the color of a tagged profile, so it is clear which one
+// you are about to start.
+function markProfileSelect() {
+  const sel = $('#new-profile');
+  const color = tagColor({ profileId: sel.value });
+  sel.classList.toggle('tagged', !!color);
+  sel.style.setProperty('--tag', color || '');
+}
+
+// A profile with its own folder fills it in.
+$('#new-profile').addEventListener('change', (e) => {
+  const p = profiles().find((x) => x.id === e.target.value);
+  if (p?.cwd) $('#new-cwd').value = p.cwd;
+  markProfileSelect();
+});
 $('#new-cancel').addEventListener('click', () => $('#new-dialog').close());
 $('#new-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const r = await startSession({ cwd: $('#new-cwd').value.trim() });
+  const profile = $('#new-profile').value || undefined;
+  store.set('profile', profile);
+  const r = await startSession({ cwd: $('#new-cwd').value.trim(), profile });
   if (r === true) $('#new-dialog').close();
   else {
     $('#new-error').textContent = r;
@@ -520,18 +758,49 @@ async function renderPanel() {
   }
 }
 
+// One section per folder: those the session changed things in, then the ones
+// it only read from, collapsed (they may hold someone else's unrelated work).
 async function renderDiff(s, body) {
   state.lastDiffAt = Date.now();
-  const d = await api(`/api/sessions/${s.key}/diff`);
+  const roots = await loadRoots(s);
+  const isOpen = (r) => changedIn(r) || state.openRoots.has(`${s.key}:${r.id}`);
+  const diffs = await Promise.all(roots.map((r) => (r.git && isOpen(r) ? api(`/api/sessions/${s.key}/diff?root=${r.id}`) : null)));
   if (state.selected !== s.key || state.tab !== 'diff') return;
-  if (!d.repo) {
-    body.innerHTML = '<div class="panel-msg">Mappen er ikke et git-repo.</div>';
+  if (roots.length === 1) {
+    body.innerHTML = rootDiffHtml(roots[0], diffs[0]);
     return;
   }
-  if (!d.files.length) {
-    body.innerHTML = `<div class="diff-head">⎇ ${esc(d.branch)} · ingen endringer</div>`;
-    return;
+  let html = '';
+  roots.forEach((r, i) => {
+    const head = `${esc(r.name)}<span class="root-path">${esc(shortPath(r.path))}</span>`;
+    if (changedIn(r)) html += `<section class="root"><div class="root-head" title="${esc(r.path)}">${head}</div>${rootDiffHtml(r, diffs[i])}</section>`;
+    else {
+      html += `<details class="root" data-root-toggle="${esc(r.id)}"${isOpen(r) ? ' open' : ''}>
+        <summary class="root-head" title="${esc(r.path)}">${head} <span class="muted">· bare lest fra</span></summary>
+        ${isOpen(r) ? rootDiffHtml(r, diffs[i]) : ''}</details>`;
+    }
+  });
+  body.innerHTML = html;
+}
+
+// data-root tells the click handler which folder the paths inside belong to.
+function rootDiffHtml(r, d) {
+  return `<div data-root="${esc(r.id)}">${r.git ? diffHtml(d) : writtenHtml(r)}</div>`;
+}
+
+// A folder without git: the files the session wrote there, newest first.
+function writtenHtml(r) {
+  const files = r.written || [];
+  let html = `<div class="diff-head">Ikke et git-repo${files.length ? ` · ${files.length} ${files.length === 1 ? 'fil' : 'filer'} endret i denne sesjonen` : ''}</div>`;
+  for (const f of files) {
+    html += `<button class="file-row" data-open="${esc(f.path)}"><span class="icon"></span><span class="grow">${esc(f.path)}</span><span class="badge">${ago(f.at)}</span></button>`;
   }
+  return html;
+}
+
+function diffHtml(d) {
+  if (!d.repo) return '<div class="panel-msg">Mappen er ikke et git-repo.</div>';
+  if (!d.files.length) return `<div class="diff-head">⎇ ${esc(d.branch)} · ingen endringer</div>`;
   const untracked = d.files.filter((f) => f.status === '??');
   const blocks = d.diff.split(/^(?=diff --git )/m).filter((b) => b.startsWith('diff --git'));
   let html = `<div class="diff-head">⎇ ${esc(d.branch)} · ${d.files.length} filer endret</div>`;
@@ -564,17 +833,23 @@ async function renderDiff(s, body) {
       html += `<button class="file-row" data-open="${esc(toCwd(f.path))}"><span class="st st-??">??</span><span class="grow">${esc(f.path)}</span></button>`;
     }
   }
-  body.innerHTML = html;
+  return html;
 }
 
 async function renderFiles(s, body) {
-  const dir = state.filesPath[s.key] || '';
-  const d = await api(`/api/sessions/${s.key}/files?path=${encodeURIComponent(dir)}`);
+  const roots = await loadRoots(s);
+  const root = roots.find((r) => r.id === state.filesRoot[s.key]) || roots[0];
+  const dir = state.filesPath[`${s.key}:${root.id}`] || '';
+  const d = await api(`/api/sessions/${s.key}/files?root=${root.id}&path=${encodeURIComponent(dir)}`);
   if (state.selected !== s.key || state.tab !== 'files') return;
   const parts = d.path ? d.path.split('/') : [];
   let crumbs = `<a data-dir="">${esc(shortPath(d.cwd).split(/[\\/]/).pop() || d.cwd)}</a>`;
   parts.forEach((p, i) => (crumbs += ` / <a data-dir="${esc(parts.slice(0, i + 1).join('/'))}">${esc(p)}</a>`));
-  let html = `<div class="crumbs">${crumbs}</div>`;
+  let html = '';
+  if (roots.length > 1) {
+    html += `<div class="roots">${roots.map((r) => `<button class="chip${r.id === root.id ? ' active' : ''}" data-pick-root="${esc(r.id)}" title="${esc(r.path)}">${esc(r.name)}${changedIn(r) ? '' : ' <span class="muted">(lest)</span>'}</button>`).join('')}</div>`;
+  }
+  html += `<div data-root="${esc(root.id)}"><div class="crumbs">${crumbs}</div>`;
   if (d.path) html += `<button class="file-row" data-dir="${esc(parts.slice(0, -1).join('/'))}"><span class="icon">↑</span><span class="grow">..</span></button>`;
   for (const e of d.entries) {
     const p = d.path ? `${d.path}/${e.name}` : e.name;
@@ -582,7 +857,7 @@ async function renderFiles(s, body) {
       ? `<button class="file-row" data-dir="${esc(p)}"><span class="icon">▸</span><span class="grow">${esc(e.name)}/</span></button>`
       : `<button class="file-row" data-open="${esc(p)}"><span class="icon"></span><span class="grow">${esc(e.name)}</span></button>`;
   }
-  body.innerHTML = html;
+  body.innerHTML = html + '</div>';
 }
 
 const REF_GROUPS = [
@@ -660,11 +935,12 @@ async function renderPreview(s, body) {
     body.innerHTML = '<div class="panel-msg">Velg en fil under <b>Filer</b> eller <b>Diff</b> for å forhåndsvise den.</div>';
     return;
   }
-  const url = rawUrl(s.key, pv.path);
+  const url = rawUrl(s.key, pv.root, pv.path);
   const e = ext(pv.path);
   const isMd = e === 'md' || e === 'markdown';
   const isHtml = e === 'html' || e === 'htm';
-  const bar = `<div class="preview-bar"><span class="grow">${esc(pv.path)}</span>
+  const rootName = pv.root !== 'main' && (state.roots[s.key] || []).find((r) => r.id === pv.root)?.name;
+  const bar = `<div class="preview-bar"><span class="grow">${rootName ? `${esc(rootName)} / ` : ''}${esc(pv.path)}</span>
     ${isMd || isHtml ? `<button class="btn small" id="src-btn">${pv.source ? 'Vis rendret' : 'Vis kilde'}</button>` : ''}
     <a href="${esc(url)}" target="_blank" rel="noopener">Åpne i ny fane ↗</a></div>`;
 
@@ -675,12 +951,12 @@ async function renderPreview(s, body) {
   } else if (e === 'pdf') {
     body.innerHTML = `${bar}<div class="panel-msg">PDF åpnes best i ny fane.</div>`;
   } else {
-    const text = await api(`/api/sessions/${s.key}/file?path=${encodeURIComponent(pv.path)}`).then((t) => (typeof t === 'string' ? t : JSON.stringify(t, null, 2)));
+    const text = await api(`/api/sessions/${s.key}/file?root=${pv.root}&path=${encodeURIComponent(pv.path)}`).then((t) => (typeof t === 'string' ? t : JSON.stringify(t, null, 2)));
     if (state.selected !== s.key || state.tab !== 'preview') return;
     if (isMd && !pv.source) {
       // Rendered without scripts; <base> makes relative images resolve to the session's files.
       const dir = pv.path.includes('/') ? pv.path.slice(0, pv.path.lastIndexOf('/') + 1) : '';
-      const doc = `<!doctype html><meta charset="utf-8"><base href="${esc(location.origin + rawUrl(s.key, dir || '.') + (dir ? '' : '/'))}" target="_blank">${MD_STYLE}${marked.parse(text)}`;
+      const doc = `<!doctype html><meta charset="utf-8"><base href="${esc(location.origin + rawUrl(s.key, pv.root, dir || '.') + (dir ? '' : '/'))}" target="_blank">${MD_STYLE}${marked.parse(text)}`;
       body.innerHTML = `${bar}<iframe class="preview-frame" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>`;
       body.querySelector('iframe').srcdoc = doc;
     } else {
@@ -708,19 +984,38 @@ $('#panel-body').addEventListener('click', (e) => {
     });
     return;
   }
-  const open = e.target.closest('[data-open]');
   const s = current();
+  const pick = e.target.closest('[data-pick-root]');
+  if (pick && s) {
+    state.filesRoot[s.key] = pick.dataset.pickRoot;
+    return renderPanel();
+  }
+  const root = e.target.closest('[data-root]')?.dataset.root || 'main';
+  const open = e.target.closest('[data-open]');
   if (open && s) {
     e.preventDefault();
-    state.preview = { key: s.key, path: open.dataset.open, source: false };
+    state.preview = { key: s.key, root, path: open.dataset.open, source: false };
     return setTab('preview');
   }
   const dir = e.target.closest('[data-dir]');
   if (dir && s) {
-    state.filesPath[s.key] = dir.dataset.dir;
+    state.filesPath[`${s.key}:${root}`] = dir.dataset.dir;
     renderPanel();
   }
 });
+
+// Read-only folders under Diff load their diff when expanded. `toggle` does
+// not bubble, hence the capture.
+$('#panel-body').addEventListener('toggle', (e) => {
+  const r = e.target.dataset?.rootToggle;
+  const s = current();
+  if (!r || !s) return;
+  const k = `${s.key}:${r}`;
+  if (e.target.open === state.openRoots.has(k)) return; // set by our own render
+  if (e.target.open) state.openRoots.add(k);
+  else state.openRoots.delete(k);
+  if (e.target.open) renderPanel();
+}, true);
 
 // Resizable panel.
 (() => {
@@ -792,7 +1087,7 @@ async function refresh() {
   }
   const prev = current();
   state.sessions = data.sessions;
-  state.info = { host: data.host, platform: data.platform, hooks: data.hooks, token: data.token };
+  state.info = { host: data.host, platform: data.platform, hooks: data.hooks, token: data.token, profiles: data.profiles };
   watchStates(state.sessions);
 
   // Drop terminals for sessions that are gone.

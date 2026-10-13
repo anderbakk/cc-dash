@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { MAX_PREVIEW, gitDiff, listDir, mimeFor, safeResolve } from './files.js';
 import { PtyHost, TmuxHost } from './hosts.js';
+import { loadProfiles, pickProfile } from './profiles.js';
 import { repoFor, resolveRefs } from './refs.js';
 import { CONFIG_FILE, DATA_DIR, IS_WIN, SETTINGS_FILE, safeId, stripBom } from './paths.js';
 import { SessionManager } from './sessions.js';
@@ -144,11 +145,12 @@ async function handle(req, res) {
 
   // Raw files for previews carry the token in the path, so relative links
   // inside a previewed HTML page (css, images) keep working in the iframe.
-  const raw = p.match(/^\/raw\/([^/]+)\/([^/]+)\/(.*)$/);
+  // /raw/<token>/<session>/<root id>/<path>
+  const raw = p.match(/^\/raw\/([^/]+)\/([^/]+)\/([^/]+)\/(.*)$/);
   if (raw && req.method === 'GET') {
     if (!tokenOk(raw[1])) return send(res, 401, { error: 'Ikke innlogget' });
-    const cwd = manager.cwdFor(raw[2]);
-    const file = cwd && safeResolve(cwd, decodeURIComponent(raw[3]));
+    const dir = await manager.rootDir(raw[2], raw[3]);
+    const file = dir && safeResolve(dir, decodeURIComponent(raw[4]));
     if (!file) return send(res, 404, { error: 'Ikke funnet' });
     return sendFile(res, file, { 'Content-Security-Policy': 'sandbox allow-scripts' });
   }
@@ -176,16 +178,26 @@ async function handle(req, res) {
         platform: process.platform,
         hooks: hooksInstalled(),
         token: config.token,
+        profiles: loadProfiles().map(({ id, name, claude, cwd, tag, color }) => ({ id, name, claude, cwd: cwd || null, tag: tag || null, color: color || null })),
       });
     }
     if (p === '/api/sessions' && req.method === 'POST') {
       const body = await readJson(req);
-      const sess = manager.create({ cwd: body.cwd, resumeId: body.resumeId });
+      // Continuing a session uses the profile it was started with, if known.
+      const wanted = body.profile || (body.resumeId && manager.rememberedProfile(body.resumeId));
+      let profile;
+      try {
+        profile = pickProfile(wanted, { claude: !!body.resumeId });
+      } catch (e) {
+        if (body.profile || !body.resumeId) throw e;
+        profile = pickProfile(null, { claude: true }); // remembered profile was removed from config
+      }
+      const sess = manager.create({ cwd: body.cwd, resumeId: body.resumeId, profile });
       return send(res, 201, { managedId: sess.id, key: sess.claudeSessionId });
     }
     if (p === '/api/dirs') return send(res, 200, { dirs: manager.recentDirs() });
 
-    const m = p.match(/^\/api\/sessions\/([^/]+)(?:\/(diff|files|file|refs))?$/);
+    const m = p.match(/^\/api\/sessions\/([^/]+)(?:\/(diff|files|file|refs|roots))?$/);
     if (m) {
       const [, id, action] = m;
       if (!safeId(id)) return send(res, 400, { error: 'Ugyldig id' });
@@ -198,7 +210,9 @@ async function handle(req, res) {
         const repo = await repoFor(manager.cwdFor(id));
         return send(res, 200, { refs: resolveRefs(refs, repo), repo });
       }
-      const cwd = manager.cwdFor(id);
+      if (action === 'roots') return send(res, 200, { roots: await manager.rootsFor(id) });
+      // Diff and files work on one of the session's folders, the cwd by default.
+      const cwd = await manager.rootDir(id, url.searchParams.get('root'));
       if (!cwd || !fs.existsSync(cwd)) return send(res, 404, { error: 'Mappen til sesjonen finnes ikke' });
       if (action === 'diff') return send(res, 200, await gitDiff(cwd));
       if (action === 'files') {

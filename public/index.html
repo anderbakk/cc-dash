@@ -13,9 +13,12 @@
     <aside id="sidebar">
       <header class="side-head">
         <span class="brand">cc-dash</span>
-        <button id="new-btn" class="btn primary" title="Start en ny Claude-sesjon">+ Ny sesjon</button>
+        <button id="new-btn" class="btn primary" title="Start en ny Claude-sesjon eller terminal">+ Ny sesjon</button>
       </header>
-      <input id="filter" class="filter" type="search" placeholder="Filtrer sesjoner…" autocomplete="off">
+      <div class="filter-row">
+        <input id="filter" class="filter" type="search" placeholder="Filtrer sesjoner…" autocomplete="off">
+        <button id="group-btn" class="btn small"></button>
+      </div>
       <nav id="session-list"></nav>
       <footer id="side-foot"></footer>
     </aside>
@@ -62,9 +65,13 @@
     </main>
   </div>
 
+  <div id="item-menu" class="menu" role="menu" hidden></div>
+
   <dialog id="new-dialog">
     <form method="dialog" id="new-form">
-      <h3>Ny Claude-sesjon</h3>
+      <h3>Ny sesjon</h3>
+      <label for="new-profile">Profil</label>
+      <select id="new-profile" title="Profiler legges til under &quot;profiles&quot; i ~/.cc-dash/config.json"></select>
       <label for="new-cwd">Mappe</label>
       <input id="new-cwd" required autocomplete="off" spellcheck="false" placeholder="/sti/til/prosjekt">
       <div class="recent-label">Nylig brukte mapper</div>

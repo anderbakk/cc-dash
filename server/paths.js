@@ -17,6 +17,18 @@ export function safeId(id) {
   return typeof id === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(id) ? id : null;
 }
 
+// Windows paths are case-insensitive, and the same folder can reach us with a
+// different drive-letter case depending on who wrote it down (transcript cwd,
+// realpath, the user typing it in). Compare accordingly.
+export const pathKey = (p) => (IS_WIN ? p.toLowerCase() : p);
+
+// Is `child` the folder `parent` or somewhere inside it?
+export function isInside(child, parent) {
+  const c = pathKey(child);
+  const p = pathKey(parent).replace(/[\\/]+$/, '');
+  return c === p || c.startsWith(p + path.sep);
+}
+
 // JSON.parse chokes on a UTF-8 BOM, and Notepad, `Out-File -Encoding utf8` and
 // a good many editors put one in front of every file they save on Windows. Any
 // hand-editable JSON we read has to go through this first.

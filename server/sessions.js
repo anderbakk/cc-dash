@@ -6,7 +6,8 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, STATE_FILE, STATUS_DIR, safeId } from './paths.js';
-import { allTranscripts } from './transcripts.js';
+import { projectRoot, sessionRoots } from './folders.js';
+import { allTranscripts, touchedFor } from './transcripts.js';
 
 const EXTERNAL_LIVE_MS = 24 * 3600e3; // hook status older than this is treated as stale
 const MAX_RECENT = 60;
@@ -19,41 +20,71 @@ export class SessionManager {
   }
 
   #load() {
-    let saved = [];
+    let saved = {};
     try {
-      saved = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')).sessions || [];
+      saved = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
     } catch {}
     // Only tmux sessions can outlive cc-dash. Anything else that is gone shows
     // up again as a normal transcript and can be resumed from there.
-    for (const s of saved) if (this.host.isAlive(s)) this.managed.set(s.id, s);
+    for (const s of saved.sessions || []) if (this.host.isAlive(s)) this.managed.set(s.id, s);
+    this.profileOf = new Map(Object.entries(saved.profiles || {})); // claude session id -> profile id
     this.#save();
   }
 
   #save() {
+    // Keep the remembered profiles from growing forever.
+    const recent = [...this.profileOf].slice(-500);
+    this.profileOf = new Map(recent);
     fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(STATE_FILE, JSON.stringify({ sessions: [...this.managed.values()] }, null, 2));
+    fs.writeFileSync(STATE_FILE, JSON.stringify({ sessions: [...this.managed.values()], profiles: Object.fromEntries(recent) }, null, 2));
   }
 
-  create({ cwd, resumeId }) {
+  // profile: from profiles.js. A Claude profile starts (or resumes) a Claude
+  // session; any other gives a plain shell, which has no transcript and only
+  // lives as long as its process.
+  create({ cwd, resumeId, profile }) {
+    cwd ||= profile.cwd;
     if (!cwd || !fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) {
       throw new Error(`Mappen finnes ikke: ${cwd}`);
     }
     if (resumeId && !safeId(resumeId)) throw new Error('Ugyldig sesjons-id');
+    if (resumeId && !profile.claude) throw new Error(`Profilen «${profile.name}» starter ikke Claude`);
     for (const s of this.managed.values()) {
       if (resumeId && s.claudeSessionId === resumeId) return s; // already running here
     }
-    const claudeSessionId = resumeId || randomUUID();
+    const id = randomUUID().slice(0, 8);
+    // Plain shells get a key of their own in the same namespace, so the
+    // sidebar, diff and files treat them like any other session.
+    const claudeSessionId = profile.claude ? resumeId || randomUUID() : `shell-${id}`;
     const sess = {
-      id: randomUUID().slice(0, 8),
+      id,
       claudeSessionId,
+      shell: !profile.claude,
+      profileId: profile.id,
+      profileName: profile.name,
       cwd: path.resolve(cwd),
-      args: resumeId ? ['--resume', resumeId] : ['--session-id', claudeSessionId],
+      // A snapshot: editing the profile later does not change a running session.
+      launch: {
+        shell: profile.shell,
+        init: profile.init,
+        command: profile.command,
+        claude: profile.claude,
+        env: profile.env,
+        args: !profile.claude ? [] : resumeId ? ['--resume', resumeId] : ['--session-id', claudeSessionId],
+      },
       createdAt: Date.now(),
     };
     this.host.start(sess);
     this.managed.set(sess.id, sess);
+    if (profile.claude) this.profileOf.set(claudeSessionId, profile.id);
     this.#save();
     return sess;
+  }
+
+  // Which profile a Claude session was started with here, so continuing it
+  // later uses the same one (same login, same env).
+  rememberedProfile(claudeSessionId) {
+    return this.profileOf.get(claudeSessionId) || null;
   }
 
   get(id) {
@@ -93,6 +124,17 @@ export class SessionManager {
     return allTranscripts().get(key)?.cwd || null;
   }
 
+  // Every folder the session works in, its cwd first (see folders.js).
+  rootsFor(key) {
+    return sessionRoots(this.cwdFor(key), touchedFor(key));
+  }
+
+  // The folder behind a root id, for diff/files. 'main' (or none) is the cwd.
+  async rootDir(key, id) {
+    if (!id || id === 'main') return this.cwdFor(key);
+    return (await this.rootsFor(key)).find((r) => r.id === id)?.path || null;
+  }
+
   list() {
     const before = this.managed.size;
     this.#prune();
@@ -108,6 +150,7 @@ export class SessionManager {
       const m = byClaudeId.get(key);
       const { hook, line } = this.#status(key);
       const cwd = m?.cwd || t?.cwd || hook?.cwd || null;
+      const root = cwd ? projectRoot(cwd) : null;
       const hookFresh = hook && now - hook.ts < EXTERNAL_LIVE_MS;
       let state = hookFresh ? hook.state : null;
       if (!m && state === 'ended') state = null;
@@ -117,9 +160,14 @@ export class SessionManager {
         running: !!m,
         // Open in a terminal outside cc-dash (according to the hooks).
         external: !m && !!state,
-        title: t?.title || null,
+        shell: !!m?.shell, // a plain terminal, not Claude
+        profileId: m?.profileId || this.profileOf.get(key) || null,
+        title: t?.title || (m?.shell ? m.profileName : null),
         cwd,
         project: cwd ? path.basename(cwd) : null,
+        // The repo (or folder) it belongs to, for grouping the sidebar.
+        projectRoot: root,
+        projectName: root ? path.basename(root) || root : null,
         gitBranch: t?.gitBranch && t.gitBranch !== 'HEAD' ? t.gitBranch : null,
         model: line?.model?.display_name || t?.model || null,
         costUsd: t?.costUsd ?? 0,
