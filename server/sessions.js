@@ -10,6 +10,10 @@ import { projectRoot, sessionRoots } from './folders.js';
 import { allTranscripts, touchedFor } from './transcripts.js';
 
 const EXTERNAL_LIVE_MS = 24 * 3600e3; // hook status older than this is treated as stale
+// A terminal outside cc-dash that was closed without ending Claude sends no
+// SessionEnd. After this long without a hook it no longer counts as active;
+// a blocked one is given longer, since that is often left overnight.
+const EXTERNAL_STALE_MS = { working: 2 * 3600e3, idle: 3 * 3600e3, waiting: EXTERNAL_LIVE_MS };
 const MAX_RECENT = 60;
 
 export class SessionManager {
@@ -100,11 +104,42 @@ export class SessionManager {
   }
 
   forget(id) {
+    fs.rmSync(path.join(STATUS_DIR, `dash-${id}.json`), { force: true });
     if (this.managed.delete(id)) this.#save();
   }
 
+  // /resume and /clear switch the terminal to another Claude session. The hook
+  // notes which one each terminal of ours runs now (CC_DASH_SESSION), and the
+  // terminal follows it: one sidebar entry, with the profile carried over. The
+  // session it left has ended, as far as this terminal goes.
+  #follow() {
+    let changed = false;
+    for (const m of this.managed.values()) {
+      if (m.shell) continue;
+      let now = null;
+      try {
+        now = safeId(JSON.parse(fs.readFileSync(path.join(STATUS_DIR, `dash-${m.id}.json`), 'utf8')).session);
+      } catch {}
+      if (!now || now === m.claudeSessionId) continue;
+      const left = m.claudeSessionId;
+      m.claudeSessionId = now;
+      if (m.profileId) this.profileOf.set(now, m.profileId);
+      this.#markEnded(left);
+      changed = true;
+    }
+    if (changed) this.#save();
+  }
+
+  #markEnded(sessionId) {
+    const file = path.join(STATUS_DIR, `${sessionId}.hook.json`);
+    try {
+      const hook = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (hook.state !== 'ended') fs.writeFileSync(file, JSON.stringify({ ...hook, state: 'ended', detail: null, ts: Date.now() }));
+    } catch {}
+  }
+
   #prune() {
-    for (const s of this.managed.values()) if (!this.host.isAlive(s)) this.managed.delete(s.id);
+    for (const s of this.managed.values()) if (!this.host.isAlive(s)) this.forget(s.id);
   }
 
   #status(sessionId) {
@@ -139,6 +174,7 @@ export class SessionManager {
     const before = this.managed.size;
     this.#prune();
     if (this.managed.size !== before) this.#save();
+    this.#follow();
 
     const transcripts = allTranscripts();
     const byClaudeId = new Map([...this.managed.values()].map((s) => [s.claudeSessionId, s]));
@@ -154,6 +190,7 @@ export class SessionManager {
       const hookFresh = hook && now - hook.ts < EXTERNAL_LIVE_MS;
       let state = hookFresh ? hook.state : null;
       if (!m && state === 'ended') state = null;
+      if (!m && state && now - hook.ts > (EXTERNAL_STALE_MS[state] ?? EXTERNAL_LIVE_MS)) state = null;
       out.push({
         key,
         managedId: m?.id || null,
@@ -177,6 +214,7 @@ export class SessionManager {
         state,
         stateDetail: hookFresh ? hook.detail || null : null,
         stateAt: hookFresh ? hook.ts : null,
+        turnStartedAt: hookFresh ? hook.turnAt || null : null,
         lastPrompt: hook?.prompt || t?.lastPrompt || t?.firstPrompt || null,
         startedAt: t?.startedAt || m?.createdAt || null,
         lastAt: Math.max(t?.lastAt || 0, hookFresh ? hook.ts : 0, m?.createdAt || 0) || null,

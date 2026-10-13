@@ -20,6 +20,7 @@ const STRINGS = {
     'state.workingOn': (d) => `working · ${d}`,
     'state.waitingSince': (t) => `Waiting for you since ${t}`,
     'state.doneAt': (t) => `Finished at ${t}`,
+    'state.took': (d) => `took ${d}`,
 
     'profile.title': (name) => `Profile: ${name}`,
 
@@ -54,6 +55,8 @@ const STRINGS = {
     'menu.shell': 'New terminal here',
     'menu.pick': 'New session here with another profile…',
     'menu.copy': 'Copy path',
+    'menu.unread': 'Mark as unread',
+    'menu.read': 'Mark as read',
 
     'head.panel': 'Panel',
     'head.panelTitle': 'Show/hide panel (diff, files, preview)',
@@ -131,6 +134,8 @@ const STRINGS = {
     'preview.newTab': 'Open in new tab ↗',
     'preview.max': 'Large view: hide the file list',
     'preview.restore': 'Show the file list again',
+    'preview.prev': 'Previous file in the folder',
+    'preview.next': 'Next file in the folder',
     'preview.pdf': 'PDF opens best in a new tab.',
 
     'notify.session': 'Claude session',
@@ -156,6 +161,7 @@ const STRINGS = {
     'state.workingOn': (d) => `jobber · ${d}`,
     'state.waitingSince': (t) => `Har ventet på deg siden ${t}`,
     'state.doneAt': (t) => `Ferdig kl. ${t}`,
+    'state.took': (d) => `tok ${d}`,
 
     'profile.title': (name) => `Profil: ${name}`,
 
@@ -190,6 +196,8 @@ const STRINGS = {
     'menu.shell': 'Ny terminal her',
     'menu.pick': 'Ny sesjon her med annen profil…',
     'menu.copy': 'Kopier sti',
+    'menu.unread': 'Merk som ulest',
+    'menu.read': 'Merk som lest',
 
     'head.panel': 'Panel',
     'head.panelTitle': 'Vis/skjul panel (diff, filer, forhåndsvisning)',
@@ -267,6 +275,8 @@ const STRINGS = {
     'preview.newTab': 'Åpne i ny fane ↗',
     'preview.max': 'Stor visning: skjul fillisten',
     'preview.restore': 'Vis fillisten igjen',
+    'preview.prev': 'Forrige fil i mappen',
+    'preview.next': 'Neste fil i mappen',
     'preview.pdf': 'PDF åpnes best i ny fane.',
 
     'notify.session': 'Claude-sesjon',

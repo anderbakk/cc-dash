@@ -160,6 +160,9 @@ button { font: inherit; color: inherit; }
 .s-idle.seen { color: var(--fg-dim); font-weight: 400; }
 .s-idle.seen .dot { background: var(--fg-dim); }
 .since { font-variant-numeric: tabular-nums; font-weight: 400; }
+.state-detail { font-weight: 400; color: var(--fg-dim); }
+.pv-nav { display: inline-flex; align-items: center; gap: 4px; }
+.pv-nav .btn[disabled] { opacity: .4; cursor: default; }
 @keyframes pulse { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) { .s-working .dot, .s-waiting.long .dot { animation: none; } }
 /* Folder groups: a clickable header that folds the group. */

@@ -101,8 +101,10 @@ function profileBadge(s) {
 }
 
 // How long a session has been waiting for the user: 0:42, 12:05, 1 h 20 min.
-function waited(t) {
-  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+const waited = (t) => span(Date.now() - t);
+
+function span(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
   if (s < 3600) return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   return tr('time.hoursMin', Math.floor(s / 3600), Math.floor((s % 3600) / 60));
 }
@@ -111,35 +113,62 @@ function waited(t) {
 const LONG_WAIT_MS = 2 * 60 * 1000;
 
 // When each session was last looked at (selected while the page is showing).
-// A finished turn stands out only until you have seen it.
+// A finished turn stands out only until you have seen it. "Mark as unread"
+// puts it back, and keeps it so until you pick the session again.
 const seen = new Map(Object.entries(store.get('seen', {})));
-const isSeen = (s) => seen.get(s.key) >= s.stateAt;
+const unread = new Set(store.get('unread', []));
+const isSeen = (s) => !unread.has(s.key) && seen.get(s.key) >= s.stateAt;
 
-function markSeen() {
-  const s = current();
-  if (!s?.stateAt || document.hidden || isSeen(s)) return;
-  seen.set(s.key, Date.now());
-  closeNote(s.key);
+function saveSeen() {
   const keys = new Set(state.sessions.map((x) => x.key));
   store.set('seen', Object.fromEntries([...seen].filter(([k]) => keys.has(k))));
+  store.set('unread', [...unread].filter((k) => keys.has(k)));
+}
+
+// `picked`: the user just chose this session, which ends "unread".
+function markSeen(picked = false) {
+  const s = current();
+  if (!s?.stateAt || document.hidden) return;
+  if (picked) unread.delete(s.key);
+  if (isSeen(s) || unread.has(s.key)) return saveSeen();
+  seen.set(s.key, Date.now());
+  closeNote(s.key);
+  saveSeen();
+}
+
+function setUnread(key, on) {
+  if (on) unread.add(key);
+  else {
+    unread.delete(key);
+    seen.set(key, Date.now());
+  }
+  saveSeen();
+  renderSidebar();
+  renderHead(current());
 }
 
 // Only a blocked session gets a running clock. A finished one is either new
 // to you or not; the sidebar already says how long ago it finished.
-function stateHtml(s) {
+// `full`: the header, which has room to say what Claude waits for and how
+// long the turn took.
+function stateHtml(s, full = false) {
   if (!s.state || s.state === 'ended') return '';
   const label = s.state === 'working' && s.stateDetail ? tr('state.workingOn', s.stateDetail) : tr(`state.${s.state}`);
   let cls = `state s-${s.state}`;
   let title = '';
-  let timer = '';
+  let extra = '';
   if (s.state === 'waiting' && s.stateAt) {
     if (Date.now() - s.stateAt > LONG_WAIT_MS) cls += ' long';
-    timer = ` · <span class="since" data-since="${s.stateAt}" title="${esc(tr('state.waitingSince', new Date(s.stateAt).toLocaleTimeString()))}">${waited(s.stateAt)}</span>`;
+    title = s.stateDetail || '';
+    extra = ` · <span class="since" data-since="${s.stateAt}" title="${esc(tr('state.waitingSince', new Date(s.stateAt).toLocaleTimeString()))}">${waited(s.stateAt)}</span>`;
+    if (full && s.stateDetail) extra += ` <span class="state-detail">· ${esc(s.stateDetail)}</span>`;
   } else if (s.state === 'idle' && s.stateAt) {
     cls += isSeen(s) ? ' seen' : ' unseen';
-    title = ` title="${esc(tr('state.doneAt', new Date(s.stateAt).toLocaleTimeString()))}"`;
+    const took = s.turnStartedAt && s.turnStartedAt < s.stateAt ? span(s.stateAt - s.turnStartedAt) : null;
+    title = tr('state.doneAt', new Date(s.stateAt).toLocaleTimeString()) + (took ? ` · ${tr('state.took', took)}` : '');
+    if (full && took) extra = ` <span class="state-detail">· ${esc(tr('state.took', took))}</span>`;
   }
-  return `<span class="${cls}"${title}><span class="dot"></span>${esc(label)}${timer}</span>`;
+  return `<span class="${cls}"${title ? ` title="${esc(title)}"` : ''}><span class="dot"></span>${esc(label)}${extra}</span>`;
 }
 
 // Tick the wait counters between polls so they count by the second.
@@ -288,6 +317,7 @@ function renderSidebar() {
   $('#session-list').innerHTML = html || `<div class="panel-msg">${tr('side.none')}</div>`;
   $('#group-btn').textContent = tr(byFolder ? 'side.byFolder' : 'side.byStatus');
   $('#group-btn').title = tr(byFolder ? 'side.byFolderTitle' : 'side.byStatusTitle');
+  renderTitle();
 
   const live = state.sessions.filter((s) => s.running || s.external);
   const total = live.reduce((sum, s) => sum + (s.costUsd || 0), 0);
@@ -393,6 +423,7 @@ function openMenu(key, at) {
     `<button role="menuitem" data-act="pick">${esc(tr('menu.pick'))}</button>`,
     '<hr>',
     `<button role="menuitem" data-act="copy">${esc(tr('menu.copy'))}<span class="hint">${esc(shortPath(s.cwd))}</span></button>`,
+    s.state === 'idle' && s.stateAt && `<button role="menuitem" data-act="${isSeen(s) ? 'unread' : 'read'}">${esc(tr(isSeen(s) ? 'menu.unread' : 'menu.read'))}</button>`,
   ];
   menu.innerHTML = items.filter(Boolean).join('');
   menu.dataset.key = key;
@@ -420,6 +451,7 @@ $('#item-menu').addEventListener('click', async (e) => {
   if (!s) return;
   const act = b.dataset.act;
   if (act === 'copy') return navigator.clipboard.writeText(s.cwd);
+  if (act === 'unread' || act === 'read') return setUnread(s.key, act === 'unread');
   if (act === 'pick') return openNewDialog({ cwd: s.cwd, profile: menu.dataset.claude });
   const r = await startSession({ cwd: s.cwd, profile: menu.dataset[act] });
   if (r !== true) alertBox(r);
@@ -447,7 +479,7 @@ function select(key) {
   const changed = key !== state.selected;
   state.selected = key;
   store.set('selected', key);
-  markSeen();
+  markSeen(true);
   if (changed) {
     state.preview = null;
     closeSearch();
@@ -476,7 +508,7 @@ function renderHead(s) {
     s.model && `<span>${esc(s.model)}</span>`,
     s.costUsd && `<span title="${esc(tr('head.costTitle'))}">${money(s.costUsd, s.costIncomplete)}</span>`,
     s.contextPct != null && `<span>${esc(tr('head.context', Math.round(s.contextPct)))}</span>`,
-    stateHtml(s),
+    stateHtml(s, true),
   ].filter(Boolean);
   $('#head-meta').innerHTML = meta.join('');
 }
@@ -965,6 +997,7 @@ async function renderFileList(s, focus) {
       : `<button class="file-row${p === pv ? ' active' : ''}" data-open="${esc(p)}"><span class="icon"></span><span class="grow">${esc(e.name)}</span></button>`;
   }
   el.innerHTML = html + '</div>';
+  renderNav(s);
   if (focus == null) return;
   const rows = [...el.querySelectorAll('.file-row')];
   const row = focus === true ? rows.find((r) => !r.classList.contains('up')) || rows[0] : rows.find((r) => rowPath(r) === focus);
@@ -982,8 +1015,37 @@ function openPreview(s, root, path) {
   const list = filesPane(s, 'files-list');
   const inRoot = list?.querySelector(`[data-root="${CSS.escape(root)}"]`);
   list?.querySelectorAll('.file-row.active').forEach((r) => r.classList.remove('active'));
-  if (inRoot) [...inRoot.querySelectorAll('[data-open]')].find((r) => r.dataset.open === path)?.classList.add('active');
+  const row = inRoot && [...inRoot.querySelectorAll('[data-open]')].find((r) => r.dataset.open === path);
+  row?.classList.add('active');
+  row?.scrollIntoView({ block: 'nearest' });
   return renderPreview(s);
+}
+
+// The previewed file's place among the files of the folder the list shows,
+// or null when the list is somewhere else.
+function siblings(s) {
+  const pv = state.preview;
+  const list = pv?.key === s.key && filesPane(s, 'files-list')?.querySelector(`[data-root="${CSS.escape(pv.root)}"]`);
+  if (!list) return null;
+  const paths = [...list.querySelectorAll('[data-open]')].map((r) => r.dataset.open);
+  const i = paths.indexOf(pv.path);
+  return i < 0 ? null : { paths, i };
+}
+
+// ‹ 3 / 12 › in the preview bar, to step through the folder without the list.
+function renderNav(s) {
+  const el = filesPane(s, 'files-preview')?.querySelector('.pv-nav');
+  if (!el) return;
+  const at = siblings(s);
+  el.innerHTML = at && at.paths.length > 1
+    ? `<button class="btn small" data-step="-1" title="${esc(tr('preview.prev'))}"${at.i === 0 ? ' disabled' : ''}>‹</button><span class="muted">${at.i + 1} / ${at.paths.length}</span><button class="btn small" data-step="1" title="${esc(tr('preview.next'))}"${at.i === at.paths.length - 1 ? ' disabled' : ''}>›</button>`
+    : '';
+}
+
+function stepPreview(s, step) {
+  const at = siblings(s);
+  const path = at?.paths[at.i + step];
+  if (path) openPreview(s, state.preview.root, path);
 }
 
 // While arrowing through a folder, wait for a pause before loading the file.
@@ -1081,6 +1143,7 @@ async function renderPreview(s) {
   const rootName = pv.root !== 'main' && (state.roots[s.key] || []).find((r) => r.id === pv.root)?.name;
   const bar = `<div class="preview-bar"><span class="grow">${rootName ? `${esc(rootName)} / ` : ''}${esc(pv.path)}</span>
     ${isMd || isHtml ? `<button class="btn small" id="src-btn">${tr(pv.source ? 'preview.rendered' : 'preview.source')}</button>` : ''}
+    <span class="pv-nav"></span>
     <a href="${esc(url)}" target="_blank" rel="noopener">${tr('preview.newTab')}</a>
     <button class="btn small" id="max-btn" title="${esc(tr(state.previewMax ? 'preview.restore' : 'preview.max'))}">${state.previewMax ? '⤡' : '⤢'}</button></div>`;
   const show = (html) => (body.innerHTML = `${bar}<div class="preview-body">${html}</div>`);
@@ -1104,6 +1167,7 @@ async function renderPreview(s) {
       show(`<pre class="preview-text">${esc(text)}</pre>`);
     }
   }
+  renderNav(s);
   body.querySelector('#src-btn')?.addEventListener('click', () => {
     pv.source = !pv.source;
     renderPreview(s);
@@ -1131,6 +1195,8 @@ $('#panel-body').addEventListener('click', (e) => {
     return;
   }
   const s = current();
+  const step = e.target.closest('[data-step]');
+  if (step && s) return stepPreview(s, Number(step.dataset.step));
   const pick = e.target.closest('[data-pick-root]');
   if (pick && s) {
     state.filesRoot[s.key] = pick.dataset.pickRoot;
@@ -1298,8 +1364,15 @@ function watchStates(sessions) {
     }
   }
   lastStates = new Map(sessions.map((s) => [s.key, s.state]));
-  const waiting = sessions.filter((s) => s.state === 'waiting').length;
-  document.title = waiting ? `(${waiting}) cc-dash` : 'cc-dash';
+}
+
+// The tab title counts what needs you: "(1! 2✓) cc-dash" for one blocked
+// session and two finished turns you have not seen.
+function renderTitle() {
+  const waiting = state.sessions.filter((s) => s.state === 'waiting').length;
+  const done = state.sessions.filter((s) => s.state === 'idle' && s.stateAt && !isSeen(s)).length;
+  const parts = [waiting && `${waiting}!`, done && `${done}✓`].filter(Boolean);
+  document.title = parts.length ? `(${parts.join(' ')}) cc-dash` : 'cc-dash';
 }
 
 $('#side-foot').addEventListener('click', (e) => {
@@ -1332,6 +1405,12 @@ async function refresh() {
   const prev = current();
   state.sessions = data.sessions;
   state.info = { host: data.host, platform: data.platform, hooks: data.hooks, token: data.token, profiles: data.profiles };
+  // After /resume or /clear the terminal runs another session: stay with it.
+  const moved = !current() && prev?.managedId && state.sessions.find((s) => s.managedId === prev.managedId);
+  if (moved) {
+    state.selected = moved.key;
+    store.set('selected', moved.key);
+  }
   watchStates(state.sessions);
   markSeen();
 
@@ -1344,6 +1423,7 @@ async function refresh() {
   const runningChanged = (prev?.running ?? null) !== (s?.running ?? null);
   if (runningChanged || !s || !s.running) renderMain();
   else renderHead(s);
+  if (moved && state.panelOpen) renderPanel();
 
   // Keep the diff fresh while Claude is working on the selected session.
   if (state.panelOpen && state.tab === 'diff' && s && (s.lastAt !== prev?.lastAt || s.state !== prev?.state) && Date.now() - state.lastDiffAt > 3000) {

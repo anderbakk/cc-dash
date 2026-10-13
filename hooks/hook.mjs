@@ -39,10 +39,28 @@ try {
       prev = JSON.parse(fs.readFileSync(file, 'utf8'));
     } catch {}
     const prompt = s.prompt ? s.prompt.replace(/\s+/g, ' ').trim().slice(0, 300) : prev.prompt;
+    // When the current turn began, so the sidebar can say how long it took.
+    const turnAt = e.hook_event_name === 'UserPromptSubmit' ? Date.now() : prev.turnAt || null;
     fs.mkdirSync(STATUS_DIR, { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ state: s.state, detail: s.detail || null, prompt, cwd: e.cwd, event: e.hook_event_name, ts: Date.now() }));
+    fs.writeFileSync(tmp, JSON.stringify({ state: s.state, detail: s.detail || null, prompt, turnAt, cwd: e.cwd, event: e.hook_event_name, ts: Date.now() }));
     fs.renameSync(tmp, file);
+  }
+  // In a terminal cc-dash started: which Claude session it runs now. /resume
+  // and /clear switch to another session id in the same terminal.
+  const dash = safeId(process.env.CC_DASH_SESSION);
+  if (id && dash) {
+    const ptr = path.join(STATUS_DIR, `dash-${dash}.json`);
+    let was = null;
+    try {
+      was = JSON.parse(fs.readFileSync(ptr, 'utf8')).session;
+    } catch {}
+    if (was !== id) {
+      fs.mkdirSync(STATUS_DIR, { recursive: true });
+      const tmp = `${ptr}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify({ session: id, ts: Date.now() }));
+      fs.renameSync(tmp, ptr);
+    }
   }
 } catch {}
 process.exit(0);
