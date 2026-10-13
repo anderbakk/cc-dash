@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR, STATE_FILE, STATUS_DIR, safeId } from './paths.js';
-import { sessionRoots } from './folders.js';
+import { projectRoot, sessionRoots } from './folders.js';
 import { allTranscripts, touchedFor } from './transcripts.js';
 
 const EXTERNAL_LIVE_MS = 24 * 3600e3; // hook status older than this is treated as stale
@@ -150,6 +150,7 @@ export class SessionManager {
       const m = byClaudeId.get(key);
       const { hook, line } = this.#status(key);
       const cwd = m?.cwd || t?.cwd || hook?.cwd || null;
+      const root = cwd ? projectRoot(cwd) : null;
       const hookFresh = hook && now - hook.ts < EXTERNAL_LIVE_MS;
       let state = hookFresh ? hook.state : null;
       if (!m && state === 'ended') state = null;
@@ -164,6 +165,9 @@ export class SessionManager {
         title: t?.title || (m?.shell ? m.profileName : null),
         cwd,
         project: cwd ? path.basename(cwd) : null,
+        // The repo (or folder) it belongs to, for grouping the sidebar.
+        projectRoot: root,
+        projectName: root ? path.basename(root) || root : null,
         gitBranch: t?.gitBranch && t.gitBranch !== 'HEAD' ? t.gitBranch : null,
         model: line?.model?.display_name || t?.model || null,
         costUsd: t?.costUsd ?? 0,

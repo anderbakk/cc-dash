@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { addTargets, newTouched, normalizePath, sessionRoots, toolTargets } from '../server/folders.js';
+import { addTargets, newTouched, normalizePath, projectRoot, sessionRoots, toolTargets } from '../server/folders.js';
 import { IS_WIN } from '../server/paths.js';
 
 const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.homedir(), '.cc-dash-test-')));
@@ -66,4 +66,16 @@ test('sessionRoots: cwd first, then written folders, read-only repos last', asyn
   assert.equal(roots[0].id, 'main');
   assert.deepEqual(roots[1].written.map((f) => f.path).sort(), ['a.md', 'deep/b.md']);
   assert.equal(roots[2].writes, 0);
+});
+
+test('projectRoot: the repo around a folder, or the folder itself', () => {
+  const repo = path.join(tmp, 'proj');
+  const sub = path.join(repo, 'Source', 'Server');
+  const loose = path.join(tmp, 'loose', 'deep');
+  fs.mkdirSync(sub, { recursive: true });
+  fs.mkdirSync(loose, { recursive: true });
+  execFileSync('git', ['init', '-q', repo]);
+  assert.equal(projectRoot(sub), repo);
+  assert.equal(projectRoot(repo), repo);
+  assert.equal(projectRoot(loose), loose);
 });

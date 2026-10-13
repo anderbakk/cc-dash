@@ -103,6 +103,33 @@ export function mergeTouched(list) {
   return out;
 }
 
+// ---- project ---------------------------------------------------------------
+
+const projects = new Map(); // dir -> { at, root }
+const PROJECT_TTL = 60e3;
+
+// The folder a session belongs to in the sidebar: the git repo around `dir`,
+// or `dir` itself outside git. Walks up looking for .git (a folder, or a file
+// in worktrees and submodules) instead of running git, because the sidebar
+// asks for every session every two seconds.
+export function projectRoot(dir) {
+  const start = normalizePath(dir);
+  if (!start) return dir || null;
+  const k = pathKey(start);
+  const hit = projects.get(k);
+  if (hit && Date.now() - hit.at < PROJECT_TTL) return hit.root;
+  let root = start;
+  for (let d = start; ; d = path.dirname(d)) {
+    if (fs.existsSync(path.join(d, '.git'))) {
+      root = d;
+      break;
+    }
+    if (path.dirname(d) === d) break;
+  }
+  projects.set(k, { at: Date.now(), root });
+  return root;
+}
+
 // ---- roots -----------------------------------------------------------------
 
 const gitTops = new Map(); // dir -> { at, top }

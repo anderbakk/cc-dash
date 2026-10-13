@@ -29,6 +29,8 @@ const state = {
   info: {},
   selected: store.get('selected', null),
   filter: '',
+  groupBy: store.get('groupBy', 'folder'), // sidebar: 'folder' | 'status'
+  collapsed: new Set(store.get('collapsed', [])), // folder groups folded away
   panelOpen: store.get('panelOpen', false),
   tab: store.get('tab', 'diff'),
   roots: {}, // session key -> the folders it works in (cwd first), see folders.js
@@ -141,30 +143,79 @@ const changedIn = (r) => r.primary || r.writes > 0;
 
 // ---- sidebar ---------------------------------------------------------------
 
+const isLive = (s) => s.running || s.external;
+
+// Where in its project a session runs: "Source/Server" for a subfolder of
+// the repo, nothing at the root.
+function placeIn(s) {
+  if (!s.cwd || !s.projectRoot) return '';
+  const rel = s.cwd.slice(s.projectRoot.length).replace(/^[\\/]+/, '');
+  return rel.replace(/\\/g, '/');
+}
+
+function itemHtml(s, byFolder) {
+  const title = s.title || (s.running ? 'Ny sesjon' : '(uten tittel)');
+  const place = byFolder ? placeIn(s) : s.project || '';
+  const meta = [place && esc(place), s.gitBranch && `⎇ ${esc(s.gitBranch)}`].filter(Boolean).join(' · ');
+  return `<div class="item${s.key === state.selected ? ' selected' : ''}${tagAttrs(s)}" data-key="${esc(s.key)}" role="button" tabindex="0">
+    <div class="item-title" title="${esc(title)}">${esc(title)}</div>
+    <div class="item-meta"><span class="grow" title="${esc(s.cwd)}">${profileBadge(s)}${meta}</span><span class="cost">${money(s.costUsd, s.costIncomplete)}</span></div>
+    <div class="item-sub"><span class="grow">${stateHtml(s) || esc(s.lastPrompt || '')}</span><span>${ago(s.lastAt)}</span></div>
+    <div class="item-actions">
+      <button class="more" data-menu="${esc(s.key)}" title="Flere valg" aria-haspopup="menu">⋯</button>
+      ${s.running ? `<button class="kill" data-kill="${esc(s.managedId)}" title="Avslutt sesjonen">×</button>` : ''}
+    </div>
+  </div>`;
+}
+
+// By folder: one group per repo (or plain folder). Groups with something
+// running come first, alphabetically: ordering them by activity would make
+// them jump around on every poll while Claude works. The rest follow by
+// latest activity. Inside a group the server's order holds: running here,
+// open elsewhere, then most recent.
+function folderGroups(list) {
+  const groups = new Map();
+  for (const s of list) {
+    const k = s.projectRoot || '';
+    if (!groups.has(k)) groups.set(k, { key: k, label: s.projectName || '(ukjent mappe)', title: s.projectRoot || '', items: [] });
+    groups.get(k).items.push(s);
+  }
+  const live = (g) => g.items.some(isLive);
+  const last = (g) => Math.max(...g.items.map((s) => s.lastAt || 0));
+  return [...groups.values()].sort((a, b) =>
+    live(b) - live(a) || (live(a) ? a.label.localeCompare(b.label, 'nb', { sensitivity: 'base' }) : last(b) - last(a)));
+}
+
+function statusGroups(list) {
+  return [
+    { key: 'running', label: 'Kjører her', items: list.filter((s) => s.running) },
+    { key: 'external', label: 'Åpne i andre terminaler', items: list.filter((s) => s.external) },
+    { key: 'recent', label: 'Nylige', items: list.filter((s) => !isLive(s)) },
+  ].filter((g) => g.items.length);
+}
+
 function renderSidebar() {
   const f = state.filter.toLowerCase();
-  const match = (s) => !f || [s.title, s.cwd, s.lastPrompt, s.gitBranch].some((v) => v && v.toLowerCase().includes(f));
-  const groups = [
-    ['Kjører her', state.sessions.filter((s) => s.running)],
-    ['Åpne i andre terminaler', state.sessions.filter((s) => s.external)],
-    ['Nylige', state.sessions.filter((s) => !s.running && !s.external)],
-  ];
+  const match = (s) => !f || [s.title, s.cwd, s.lastPrompt, s.gitBranch, s.projectName, profileOf(s)?.tag].some((v) => v && v.toLowerCase().includes(f));
+  const byFolder = state.groupBy === 'folder';
+  const list = state.sessions.filter(match);
   let html = '';
-  for (const [label, list] of groups) {
-    const items = list.filter(match);
-    if (!items.length) continue;
-    html += `<div class="group-label">${label}</div>`;
-    for (const s of items) {
-      const title = s.title || (s.running ? 'Ny sesjon' : '(uten tittel)');
-      html += `<div class="item${s.key === state.selected ? ' selected' : ''}${tagAttrs(s)}" data-key="${esc(s.key)}" role="button" tabindex="0">
-        <div class="item-title" title="${esc(title)}">${esc(title)}</div>
-        <div class="item-meta"><span class="grow" title="${esc(s.cwd)}">${profileBadge(s)}${esc(s.project || '')}${s.gitBranch ? ` · ${esc(s.gitBranch)}` : ''}</span><span class="cost">${money(s.costUsd, s.costIncomplete)}</span></div>
-        <div class="item-sub"><span class="grow">${stateHtml(s) || esc(s.lastPrompt || '')}</span><span>${ago(s.lastAt)}</span></div>
-        ${s.running ? `<button class="kill" data-kill="${esc(s.managedId)}" title="Avslutt sesjonen">×</button>` : ''}
-      </div>`;
+  for (const g of byFolder ? folderGroups(list) : statusGroups(list)) {
+    // While filtering, show every hit even in collapsed groups.
+    const collapsed = byFolder && !f && state.collapsed.has(g.key);
+    const liveCount = g.items.filter(isLive).length;
+    if (byFolder) {
+      html += `<button class="group-label group-toggle" data-group="${esc(g.key)}" title="${esc(g.title)}" aria-expanded="${!collapsed}">
+        <span class="chev">${collapsed ? '▸' : '▾'}</span><span class="grow">${esc(g.label)}</span>
+        ${liveCount ? `<span class="live-count">${liveCount} aktiv${liveCount > 1 ? 'e' : ''}</span>` : ''}<span title="${g.items.length} sesjoner">${g.items.length}</span></button>`;
+    } else {
+      html += `<div class="group-label">${g.label}</div>`;
     }
+    if (!collapsed) html += g.items.map((s) => itemHtml(s, byFolder)).join('');
   }
   $('#session-list').innerHTML = html || '<div class="panel-msg">Ingen sesjoner funnet.</div>';
+  $('#group-btn').textContent = byFolder ? '⇅ Mappe' : '⇅ Status';
+  $('#group-btn').title = byFolder ? 'Gruppert etter mappe. Klikk for å gruppere etter status.' : 'Gruppert etter status. Klikk for å gruppere etter mappe.';
 
   const live = state.sessions.filter((s) => s.running || s.external);
   const total = live.reduce((sum, s) => sum + (s.costUsd || 0), 0);
@@ -192,16 +243,118 @@ $('#session-list').addEventListener('click', (e) => {
     api(`/api/sessions/${kill.dataset.kill}`, { method: 'DELETE' }).then(refresh, (err) => alertBox(err.message));
     return;
   }
+  const more = e.target.closest('[data-menu]');
+  if (more) {
+    e.stopPropagation();
+    return openMenu(more.dataset.menu, more.getBoundingClientRect());
+  }
+  const group = e.target.closest('[data-group]');
+  if (group) {
+    const k = group.dataset.group;
+    if (state.collapsed.has(k)) state.collapsed.delete(k);
+    else state.collapsed.add(k);
+    store.set('collapsed', [...state.collapsed]);
+    return renderSidebar();
+  }
   const item = e.target.closest('.item');
   if (item) select(item.dataset.key);
 });
+$('#session-list').addEventListener('contextmenu', (e) => {
+  const item = e.target.closest('.item');
+  if (!item) return;
+  e.preventDefault();
+  openMenu(item.dataset.key, { left: e.clientX, right: e.clientX, top: e.clientY, bottom: e.clientY });
+});
 $('#session-list').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target.classList.contains('item')) select(e.target.dataset.key);
+  // Shift+F10 / the menu key, as in any list with context menus.
+  if ((e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) && e.target.classList.contains('item')) {
+    e.preventDefault();
+    openMenu(e.target.dataset.key, e.target.getBoundingClientRect());
+  }
 });
 $('#filter').addEventListener('input', (e) => {
   state.filter = e.target.value;
   renderSidebar();
 });
+$('#group-btn').addEventListener('click', () => {
+  state.groupBy = state.groupBy === 'folder' ? 'status' : 'folder';
+  store.set('groupBy', state.groupBy);
+  renderSidebar();
+});
+
+// ---- session menu ----------------------------------------------------------
+// Lives outside the list, which is redrawn on every poll.
+
+// The profile for "the same kind, but Claude" (or "but a plain terminal"):
+// the session's own profile if it is that kind, else one with the same tag,
+// else the default of that kind. A "Work" terminal thus gives "Work + Claude".
+function siblingProfile(s, claude) {
+  const p = profileOf(s);
+  const kind = profiles().filter((x) => x.claude === claude);
+  if (p && p.claude === claude) return p;
+  return (p?.tag && kind.find((x) => x.tag === p.tag)) || kind[0] || null;
+}
+
+function openMenu(key, at) {
+  const s = state.sessions.find((x) => x.key === key);
+  const menu = $('#item-menu');
+  if (!s || !s.cwd) return;
+  const claudeP = siblingProfile(s, true);
+  const shellP = siblingProfile(s, false);
+  const items = [
+    claudeP && `<button role="menuitem" data-act="claude">Ny Claude-sesjon her<span class="hint">${esc(claudeP.name)}</span></button>`,
+    shellP && `<button role="menuitem" data-act="shell">Ny terminal her<span class="hint">${esc(shellP.name)}</span></button>`,
+    `<button role="menuitem" data-act="pick">Ny sesjon her med annen profil…</button>`,
+    '<hr>',
+    `<button role="menuitem" data-act="copy">Kopier sti<span class="hint">${esc(shortPath(s.cwd))}</span></button>`,
+  ];
+  menu.innerHTML = items.filter(Boolean).join('');
+  menu.dataset.key = key;
+  menu.dataset.claude = claudeP?.id || '';
+  menu.dataset.shell = shellP?.id || '';
+  menu.hidden = false;
+  // Below the button, kept inside the window.
+  const w = menu.offsetWidth;
+  const h = menu.offsetHeight;
+  menu.style.left = `${Math.max(4, Math.min(at.right - w, innerWidth - w - 4))}px`;
+  menu.style.top = `${at.bottom + h + 4 > innerHeight ? Math.max(4, at.top - h - 4) : at.bottom + 4}px`;
+  menu.querySelector('button')?.focus();
+}
+
+function closeMenu() {
+  $('#item-menu').hidden = true;
+}
+
+$('#item-menu').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-act]');
+  if (!b) return;
+  const menu = $('#item-menu');
+  const s = state.sessions.find((x) => x.key === menu.dataset.key);
+  closeMenu();
+  if (!s) return;
+  const act = b.dataset.act;
+  if (act === 'copy') return navigator.clipboard.writeText(s.cwd);
+  if (act === 'pick') return openNewDialog({ cwd: s.cwd, profile: menu.dataset.claude });
+  const r = await startSession({ cwd: s.cwd, profile: menu.dataset[act] });
+  if (r !== true) alertBox(r);
+});
+$('#item-menu').addEventListener('keydown', (e) => {
+  const buttons = [...$('#item-menu').querySelectorAll('button')];
+  const i = buttons.indexOf(document.activeElement);
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    buttons[(i + (e.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length]?.focus();
+  }
+});
+document.addEventListener('pointerdown', (e) => {
+  if (!e.target.closest('#item-menu, [data-menu]')) closeMenu();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('#item-menu').hidden) closeMenu();
+});
+$('#session-list').addEventListener('scroll', closeMenu);
+addEventListener('resize', closeMenu);
 
 // ---- main area -------------------------------------------------------------
 
@@ -499,23 +652,25 @@ async function startSession(body) {
     const r = await api('/api/sessions', { method: 'POST', body: JSON.stringify(body) });
     await refresh();
     select(r.key);
+    $('#session-list .item.selected')?.scrollIntoView({ block: 'nearest' });
     return true;
   } catch (e) {
     return e.message;
   }
 }
 
-$('#new-btn').addEventListener('click', async () => {
+// Opens "Ny sesjon", optionally filled in (from a session's menu).
+async function openNewDialog(prefill = {}) {
   const dlg = $('#new-dialog');
   $('#new-error').hidden = true;
   const cur = current();
   const sel = $('#new-profile');
-  const last = store.get('profile', null);
+  const want = prefill.profile || store.get('profile', null);
   sel.innerHTML = profiles()
-    .map((p) => `<option value="${esc(p.id)}"${p.id === last ? ' selected' : ''}>${esc(p.name)}${p.claude ? '' : ' (terminal)'}</option>`)
+    .map((p) => `<option value="${esc(p.id)}"${p.id === want ? ' selected' : ''}>${esc(p.name)}${p.claude ? '' : ' (terminal)'}</option>`)
     .join('');
   const prof = profiles().find((p) => p.id === sel.value);
-  $('#new-cwd').value = prof?.cwd || cur?.cwd || '';
+  $('#new-cwd').value = prefill.cwd || prof?.cwd || cur?.cwd || '';
   markProfileSelect();
   $('#recent-dirs').innerHTML = '';
   dlg.showModal();
@@ -525,7 +680,8 @@ $('#new-btn').addEventListener('click', async () => {
     $('#recent-dirs').innerHTML = dirs.map((d) => `<button type="button" data-dir="${esc(d)}">${esc(shortPath(d))}</button>`).join('')
       || '<div class="panel-msg">Ingen ennå</div>';
   } catch {}
-});
+}
+$('#new-btn').addEventListener('click', () => openNewDialog());
 $('#recent-dirs').addEventListener('click', (e) => {
   const b = e.target.closest('[data-dir]');
   if (b) $('#new-cwd').value = b.dataset.dir;

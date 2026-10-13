@@ -15,7 +15,10 @@
         <span class="brand">cc-dash</span>
         <button id="new-btn" class="btn primary" title="Start en ny Claude-sesjon eller terminal">+ Ny sesjon</button>
       </header>
-      <input id="filter" class="filter" type="search" placeholder="Filtrer sesjoner…" autocomplete="off">
+      <div class="filter-row">
+        <input id="filter" class="filter" type="search" placeholder="Filtrer sesjoner…" autocomplete="off">
+        <button id="group-btn" class="btn small"></button>
+      </div>
       <nav id="session-list"></nav>
       <footer id="side-foot"></footer>
     </aside>
@@ -61,6 +64,8 @@
       </div>
     </main>
   </div>
+
+  <div id="item-menu" class="menu" role="menu" hidden></div>
 
   <dialog id="new-dialog">
     <form method="dialog" id="new-form">
