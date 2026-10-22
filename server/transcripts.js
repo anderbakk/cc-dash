@@ -308,6 +308,60 @@ export function touchedFor(sessionId) {
   return list.length ? mergeTouched(list) : null;
 }
 
+// The conversation at the end of a session, for the skipper: what you and
+// Claude wrote, with a one-line note per tool call. Only the tail of the file
+// is read, so this stays quick on long sessions.
+const TAIL_BYTES = 4 << 20;
+
+export function recentMessages(sessionId, { last = 10, maxChars = 2000 } = {}) {
+  scanTranscripts();
+  let file = null;
+  for (const e of cache.values()) if (!e.parent && e.data.sessionId === sessionId) file = e.file;
+  if (!file) return null;
+  return tailMessages(file, { last, maxChars });
+}
+
+export function tailMessages(file, { last = 10, maxChars = 2000 } = {}) {
+  let text;
+  const fd = fs.openSync(file, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(0, size - TAIL_BYTES);
+    const buf = Buffer.alloc(size - start);
+    fs.readSync(fd, buf, 0, buf.length, start);
+    text = buf.toString('utf8');
+    if (start > 0) text = text.slice(text.indexOf('\n') + 1); // the first line is cut
+  } finally {
+    fs.closeSync(fd);
+  }
+  const out = [];
+  for (const line of text.split('\n')) {
+    let o;
+    try {
+      o = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (o.isSidechain || o.isMeta) continue;
+    const at = o.timestamp || null;
+    const content = o.message?.content;
+    if (o.type === 'user') {
+      const t = texts(content).join('\n').trim();
+      if (t && !t.startsWith('<')) out.push({ role: 'user', at, text: t });
+    } else if (o.type === 'assistant') {
+      const t = texts(content).join('\n').trim();
+      if (t) out.push({ role: 'claude', at, text: t });
+      for (const c of Array.isArray(content) ? content : []) {
+        if (c?.type !== 'tool_use') continue;
+        const i = c.input || {};
+        const what = i.command || i.file_path || i.pattern || i.url || i.description || '';
+        out.push({ role: 'tool', at, text: `${c.name}${what ? ': ' + clip(String(what), 160) : ''}` });
+      }
+    }
+  }
+  return out.slice(-last).map((m) => (m.text.length > maxChars ? { ...m, text: m.text.slice(0, maxChars - 1) + '…' } : m));
+}
+
 // For tests: parse one file from scratch, including the raw cost-state.
 export function parseFile(file) {
   const e = newEntry(file);

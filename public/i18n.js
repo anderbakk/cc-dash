@@ -32,6 +32,9 @@ const STRINGS = {
 
     'side.newBtn': '+ New session',
     'side.newBtnTitle': 'Start a new Claude session or terminal',
+    'side.skipperBtn': 'Skipper',
+    'side.skipperBtnTitle': 'Open the skipper: one session that runs the others for you',
+    'fleet.badgeTitle': (id, phase) => `Task ${id}, phase ${phase}`,
     'side.filter': 'Filter sessions…',
     'side.unknownFolder': '(unknown folder)',
     'side.runningHere': 'Running here',
@@ -174,6 +177,9 @@ const STRINGS = {
 
     'side.newBtn': '+ Ny sesjon',
     'side.newBtnTitle': 'Start en ny Claude-sesjon eller terminal',
+    'side.skipperBtn': 'Skipper',
+    'side.skipperBtnTitle': 'Åpne skipperen: én sesjon som styrer de andre for deg',
+    'fleet.badgeTitle': (id, phase) => `Task ${id}, fase ${phase}`,
     'side.filter': 'Filtrer sesjoner…',
     'side.unknownFolder': '(ukjent mappe)',
     'side.runningHere': 'Kjører her',

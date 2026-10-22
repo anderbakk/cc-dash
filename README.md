@@ -121,6 +121,48 @@ and aliases it defines do not.
 Profiles can only be defined in the config file, not through the web UI or
 API, so a page that got hold of the token cannot add a command of its own.
 
+## The skipper
+
+With many sessions going at once, the **Skipper** button opens one session
+that runs the others for you. You tell it what to do; it starts a crew session
+per task, keeps an eye on them, answers what it can, and brings you only what
+needs you.
+
+```
+You ──► Skipper (Claude + cc-dash MCP tools) ──► crew sessions, one per task
+                ▲                                 each in its own worktree
+                └── [cc-dash] events: turn done, waiting, PR opened, PR merged
+```
+
+- **Tasks.** `start_task` creates a worktree and branch in
+  `<repo>/.claude/worktrees/<branch>` (kept out of `git status` through
+  `.git/info/exclude`), starts Claude there and types the brief in once it is
+  ready. Existing sessions can be taken in with `track_session`. Tasks, with
+  their story, branch, PR and phase, are kept in `~/.cc-dash/fleet.json`.
+- **Events cost nothing while nothing happens.** cc-dash watches the crew's
+  hook state and transcripts, and checks open PRs every few minutes with `gh`
+  or `az`. When something happens it types a `[cc-dash] …` message into the
+  skipper's terminal, but only once the skipper is idle and you have not
+  typed there for 20 seconds.
+- **Rules.** The skipper does not change code itself, never merges a PR (you
+  do), and closes the story (Azure Boards or GitHub issue) and the task once
+  the PR is merged. How to document the work comes from each repo's own
+  CLAUDE.md and `docs/`. Its instructions are in
+  [`skipper/CLAUDE.md`](skipper/CLAUDE.md), copied to `~/.cc-dash/skipper/` on
+  every start.
+- The skipper runs in `~/.cc-dash/skipper/` with `--mcp-config` pointing at
+  cc-dash's `/mcp` endpoint (Bearer token, the same one as the web UI), and
+  the cc-dash tools allowed. The Skipper button continues its last
+  conversation.
+
+Requires the hooks (`npm run setup`). For PR status, `gh` and/or `az` (with
+the `azure-devops` extension) have to be installed and logged in.
+
+A worktree inside a repo you have trusted in Claude Code starts without a
+prompt. In a repo you have not trusted yet, the crew session stops at Claude's
+trust prompt. The skipper is told when a brief has not been delivered after
+90 seconds, and you answer the prompt in the crew's terminal.
+
 ## How it works
 
 ```

@@ -19,7 +19,8 @@ const MAX_RECENT = 60;
 export class SessionManager {
   constructor(host) {
     this.host = host;
-    this.managed = new Map(); // id -> { id, claudeSessionId, cwd, args, createdAt }
+    this.managed = new Map(); // id -> { id, claudeSessionId, cwd, role, launch, createdAt }
+    this.lastInput = new Map(); // id -> ms
     this.#load();
   }
 
@@ -46,7 +47,9 @@ export class SessionManager {
   // profile: from profiles.js. A Claude profile starts (or resumes) a Claude
   // session; any other gives a plain shell, which has no transcript and only
   // lives as long as its process.
-  create({ cwd, resumeId, profile }) {
+  // role: 'skipper' for the session that runs the fleet (see fleet.js), else
+  // none. name and extraArgs only apply to a new Claude session.
+  create({ cwd, resumeId, profile, role = null, name = null, extraArgs = [] }) {
     cwd ||= profile.cwd;
     if (!cwd || !fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) {
       throw new Error(`Folder does not exist: ${cwd}`);
@@ -67,6 +70,7 @@ export class SessionManager {
       profileId: profile.id,
       profileName: profile.name,
       cwd: path.resolve(cwd),
+      role,
       // A snapshot: editing the profile later does not change a running session.
       launch: {
         shell: profile.shell,
@@ -74,7 +78,9 @@ export class SessionManager {
         command: profile.command,
         claude: profile.claude,
         env: profile.env,
-        args: !profile.claude ? [] : resumeId ? ['--resume', resumeId] : ['--session-id', claudeSessionId],
+        args: !profile.claude
+          ? []
+          : [...(resumeId ? ['--resume', resumeId] : ['--session-id', claudeSessionId, ...(name ? ['--name', name] : [])]), ...extraArgs],
       },
       createdAt: Date.now(),
     };
@@ -93,6 +99,25 @@ export class SessionManager {
 
   get(id) {
     return this.managed.get(id) || null;
+  }
+
+  // Types text into a running session as if it came from the keyboard, and
+  // submits it. Several lines go in as one paste, or the first newline would
+  // already submit. The Enter comes a moment later: sent together with the
+  // text, Claude Code takes it for part of a paste.
+  type(id, text) {
+    const s = this.managed.get(id);
+    if (!s) return false;
+    const multi = /[\r\n]/.test(text);
+    if (!this.host.write(s, multi ? `\x1b[200~${text.replace(/\r\n?/g, '\n')}\x1b[201~` : text)) return false;
+    setTimeout(() => this.host.write(s, '\r'), 400);
+    return true;
+  }
+
+  // When someone last typed into a session from the browser, so cc-dash does
+  // not type over a half-written message.
+  noteInput(id) {
+    this.lastInput.set(id, Date.now());
   }
 
   kill(id) {
@@ -195,6 +220,7 @@ export class SessionManager {
         key,
         managedId: m?.id || null,
         running: !!m,
+        role: m?.role || null,
         // Open in a terminal outside cc-dash (according to the hooks).
         external: !m && !!state,
         shell: !!m?.shell, // a plain terminal, not Claude

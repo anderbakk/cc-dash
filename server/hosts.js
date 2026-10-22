@@ -2,6 +2,7 @@
 //   start(sess)            launch `claude` for a session
 //   isAlive(sess)          is the process still running
 //   attach(sess, size)     -> view { onData(cb), onExit(cb), write(s), resize(c, r), close() }
+//   write(sess, s)         type into the session without a browser attached
 //   kill(sess)
 //
 // TmuxHost (Linux/macOS when tmux is installed): sessions live in a private
@@ -175,6 +176,13 @@ export class PtyHost {
     };
   }
 
+  write(sess, s) {
+    const proc = this.#procs.get(sess.id);
+    if (!proc?.alive) return false;
+    proc.pty.write(s);
+    return true;
+  }
+
   kill(sess) {
     this.#procs.get(sess.id)?.pty.kill();
   }
@@ -276,6 +284,15 @@ export class TmuxHost {
         p.kill(); // detaches this client; the session keeps running
       },
     };
+  }
+
+  write(sess, s) {
+    try {
+      this.#tmux(['send-keys', '-t', this.#target(sess), '-l', '--', s]);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   kill(sess) {

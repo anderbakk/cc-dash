@@ -6,8 +6,10 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
+import { Fleet } from './fleet.js';
 import { MAX_PREVIEW, gitDiff, listDir, mimeFor, safeResolve } from './files.js';
 import { PtyHost, TmuxHost } from './hosts.js';
+import { createMcp } from './mcp.js';
 import { COOKIE, HOST, PORT, findRunning, loginUrl, openBrowser } from './local.js';
 import { loadProfiles, pickProfile } from './profiles.js';
 import { repoFor, resolveRefs } from './refs.js';
@@ -76,6 +78,8 @@ function originOk(req) {
 
 const host = TmuxHost.available() ? new TmuxHost() : new PtyHost({ onExit: (s) => manager.forget(s.id) });
 const manager = new SessionManager(host);
+const fleet = new Fleet(manager, { token: config.token, pickProfile });
+const mcp = createMcp({ manager, fleet, tokenOk });
 
 function hooksInstalled() {
   try {
@@ -83,6 +87,12 @@ function hooksInstalled() {
   } catch {
     return false;
   }
+}
+
+// Which task each session belongs to, for a badge in the sidebar.
+function withTasks(list) {
+  const tasks = new Map(fleet.list().map((t) => [t.sessionKey, { id: t.id, phase: t.phase }]));
+  return list.map((s) => (tasks.has(s.key) ? { ...s, task: tasks.get(s.key) } : s));
 }
 
 // ---- http ------------------------------------------------------------------
@@ -153,6 +163,18 @@ async function handle(req, res) {
     return sendFile(res, file, { 'Content-Security-Policy': 'sandbox allow-scripts' });
   }
 
+  // The skipper's MCP tools (see mcp.js). Authenticated by a Bearer token.
+  if (p === '/mcp') {
+    let body = null;
+    try {
+      if (req.method === 'POST') body = await readJson(req);
+    } catch (e) {
+      return send(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: e.message } });
+    }
+    const [status, reply] = await mcp.handle(req, body);
+    return reply ? send(res, status, reply) : send(res, status, '', 'text/plain');
+  }
+
   if (!authed(req)) {
     if (p.startsWith('/api/')) return send(res, 401, { error: 'Not logged in' });
     return send(res, 401, LOGIN_PAGE, 'text/html; charset=utf-8');
@@ -182,7 +204,7 @@ async function handle(req, res) {
     }
     if (p === '/api/sessions' && req.method === 'GET') {
       return send(res, 200, {
-        sessions: manager.list(),
+        sessions: withTasks(manager.list()),
         host: host.name,
         platform: process.platform,
         hooks: hooksInstalled(),
@@ -204,6 +226,12 @@ async function handle(req, res) {
       const sess = manager.create({ cwd: body.cwd, resumeId: body.resumeId, profile });
       return send(res, 201, { managedId: sess.id, key: sess.claudeSessionId });
     }
+    if (p === '/api/skipper' && req.method === 'POST') {
+      const body = await readJson(req);
+      const sess = fleet.startSkipper({ fresh: !!body.fresh });
+      return send(res, 201, { managedId: sess.id, key: sess.claudeSessionId });
+    }
+    if (p === '/api/fleet' && req.method === 'GET') return send(res, 200, { tasks: fleet.list() });
     if (p === '/api/dirs') return send(res, 200, { dirs: manager.recentDirs() });
 
     const m = p.match(/^\/api\/sessions\/([^/]+)(?:\/(diff|files|file|refs|roots))?$/);
@@ -275,7 +303,10 @@ server.on('upgrade', (req, socket, head) => {
       } catch {
         return;
       }
-      if (o.t === 'in' && typeof o.d === 'string') view.write(o.d);
+      if (o.t === 'in' && typeof o.d === 'string') {
+        view.write(o.d);
+        manager.noteInput(sess.id);
+      }
       else if (o.t === 'resize' && o.c > 0 && o.r > 0) view.resize(Math.min(o.c, 500), Math.min(o.r, 200));
     });
     ws.on('close', () => view.close());
@@ -305,6 +336,7 @@ server.listen(PORT, HOST, () => {
   console.log(`\n  ${url}\n`);
   if (!hooksInstalled()) console.log('Tip: run "npm run setup" for live status (working/waiting) in the sidebar.\n');
   if (!noOpen) openBrowser(url);
+  fleet.start();
 });
 
 function shutdown() {

@@ -10,6 +10,14 @@ Prioritised by value in daily use.
       Claude changed in the session.
 - [x] **English UI.** The UI is available in English and Norwegian; the language
       follows the browser and can be switched in the sidebar footer.
+- [x] **Skipper.** One session that runs the others through cc-dash's MCP tools:
+      tasks with worktrees, events typed in when it is idle, PR status via gh/az.
+- [ ] **Fleet view.** A panel with every task: story, phase, PR, crew state, and
+      buttons to open the crew or the PR.
+- [ ] **Skipper: away mode.** Let it answer the crew more freely while you are
+      away, and give a digest when you are back (like firstmate's `/afk`).
+- [ ] **Story status from the tracker.** Show the work item / issue state next to
+      the task, not only the PR state.
 
 ## Soon
 

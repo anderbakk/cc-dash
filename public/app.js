@@ -97,6 +97,8 @@ function profileBadge(s) {
   if (p?.tag) html += `<span class="profile tagged" style="--tag:${esc(tagColor(s))}" title="${esc(tr('profile.title', p.name))}">${esc(p.tag)}</span>`;
   else if (p && !s.shell && p !== profiles().find((x) => x.claude)) html += `<span class="profile">${esc(p.name)}</span>`;
   if (s.shell) html += '<span class="profile">terminal</span>';
+  if (s.role === 'skipper') html += '<span class="profile skipper">skipper</span>';
+  if (s.task) html += `<span class="profile phase-${esc(s.task.phase)}" title="${esc(tr('fleet.badgeTitle', s.task.id, s.task.phase))}">${esc(s.task.phase)}</span>`;
   return html;
 }
 
@@ -802,6 +804,17 @@ async function openNewDialog(prefill = {}) {
   } catch {}
 }
 $('#new-btn').addEventListener('click', () => openNewDialog());
+
+// The skipper runs the fleet (see server/fleet.js): start it, or open the one that runs.
+$('#skipper-btn').addEventListener('click', async () => {
+  try {
+    const r = await api('/api/skipper', { method: 'POST', body: '{}' });
+    await refresh();
+    select(r.key);
+  } catch (e) {
+    alert(e.message);
+  }
+});
 $('#recent-dirs').addEventListener('click', (e) => {
   const b = e.target.closest('[data-dir]');
   if (b) $('#new-cwd').value = b.dataset.dir;
