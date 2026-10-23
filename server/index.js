@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { Fleet } from './fleet.js';
-import { MAX_PREVIEW, gitDiff, listDir, mimeFor, safeResolve } from './files.js';
+import { MAX_PREVIEW, gitDiff, listDir, mimeFor, safeResolve, searchFiles } from './files.js';
 import { PtyHost, TmuxHost } from './hosts.js';
 import { createMcp } from './mcp.js';
 import { COOKIE, HOST, PORT, findRunning, loginUrl, openBrowser } from './local.js';
@@ -234,7 +234,7 @@ async function handle(req, res) {
     if (p === '/api/fleet' && req.method === 'GET') return send(res, 200, { tasks: fleet.list() });
     if (p === '/api/dirs') return send(res, 200, { dirs: manager.recentDirs() });
 
-    const m = p.match(/^\/api\/sessions\/([^/]+)(?:\/(diff|files|file|refs|roots))?$/);
+    const m = p.match(/^\/api\/sessions\/([^/]+)(?:\/(diff|files|file|search|refs|roots))?$/);
     if (m) {
       const [, id, action] = m;
       if (!safeId(id)) return send(res, 400, { error: 'Invalid id' });
@@ -255,6 +255,10 @@ async function handle(req, res) {
       if (action === 'files') {
         const listing = listDir(cwd, url.searchParams.get('path') || '');
         return listing ? send(res, 200, { cwd, ...listing }) : send(res, 404, { error: 'Not found' });
+      }
+      if (action === 'search') {
+        const found = await searchFiles(cwd, url.searchParams.get('path') || '', url.searchParams.get('q'));
+        return found ? send(res, 200, { cwd, ...found }) : send(res, 404, { error: 'Not found' });
       }
       if (action === 'file') {
         const file = safeResolve(cwd, url.searchParams.get('path') || '');

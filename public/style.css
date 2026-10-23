@@ -439,8 +439,58 @@ details.root > summary.root-head { cursor: pointer; }
 }
 .diff-file summary .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .diff-file summary a { color: var(--accent); cursor: pointer; }
-.diff-lines { margin: 0; font: 12px/1.45 var(--mono); overflow-x: auto; }
-.diff-lines div { padding: 0 12px; white-space: pre; min-width: max-content; }
+.diff-lines { margin: 0; font: 12px/1.45 var(--mono); overflow-x: auto; container-type: inline-size; }
+.diff-lines > div:not(.dc) { padding: 0 12px 0 0; white-space: pre; min-width: max-content; background: var(--bg); }
+.diff-lines > div.hunk { padding-left: 12px; }
+.diff-lines > .sel { box-shadow: inset 3px 0 var(--accent); }
+/* Line numbers: click one to comment on the line. */
+.diff-lines .ln {
+  all: unset;
+  display: inline-block;
+  width: 5ch;
+  margin-right: 8px;
+  padding-right: 4px;
+  text-align: right;
+  color: var(--fg-dim);
+  opacity: .6;
+  cursor: pointer;
+  user-select: none;
+  position: sticky;
+  left: 0;
+  background: inherit;
+}
+.diff-lines > div:hover .ln { opacity: 1; color: var(--accent); }
+/* Review comments: kept to the visible width while the diff scrolls sideways. */
+.dc {
+  position: sticky;
+  left: 0;
+  box-sizing: border-box;
+  width: 100cqw;
+  margin: 4px 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--bg-elev);
+  font: 13px/1.45 system-ui, sans-serif;
+  white-space: normal;
+}
+.dc-where { font: 11px var(--mono); color: var(--fg-dim); margin-bottom: 4px; }
+.dc-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.dc textarea { width: 100%; box-sizing: border-box; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 6px; resize: vertical; }
+.dc-actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; margin-top: 6px; font-size: 12px; }
+.dc-actions .grow { flex: 1; }
+.dc-bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+.dc-bar .grow { flex: 1; font-weight: 600; }
+.dc-bar .btn[disabled] { opacity: .4; cursor: default; }
+.dc-lost { padding: 0 12px; container-type: inline-size; }
+.dc-lost .dc { width: auto; position: static; }
 .diff-lines .add { background: var(--add-bg); color: var(--add-fg); }
 .diff-lines .del { background: var(--del-bg); color: var(--del-fg); }
 .diff-lines .hunk { color: var(--hunk); padding-top: 4px; }
@@ -467,7 +517,15 @@ details.root > summary.root-head { cursor: pointer; }
    by side once the panel is wide enough; the gutter between them drags. */
 #panel-body { container-type: inline-size; }
 .files-split { position: absolute; inset: 0; display: flex; flex-direction: column; }
-.files-list { flex: 0 0 var(--files-list, 35%); overflow: auto; min-height: 0; min-width: 0; }
+.files-list { flex: 0 0 var(--files-list, 35%); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.files-search { flex: none; padding: 6px 12px; border-bottom: 1px solid var(--border); }
+.files-q { width: 100%; box-sizing: border-box; font: 12px var(--mono); padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-elev); color: var(--fg); }
+.files-q:focus { outline: none; border-color: var(--accent); }
+.files-entries { flex: 1; overflow: auto; min-height: 0; }
+.hit { padding: 1px 12px 1px 34px; font: 11px/1.5 var(--mono); color: var(--fg-dim); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hit:hover { background: var(--bg-hover); }
+.hit-ln { display: inline-block; min-width: 3ch; margin-right: 8px; text-align: right; opacity: 0.7; }
+.hit mark { background: var(--waiting); color: var(--bg); border-radius: 2px; }
 .files-preview { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .files-gutter { flex: none; height: 5px; cursor: row-resize; background: var(--border); touch-action: none; }
 .files-gutter:hover, .files-gutter.dragging { background: var(--accent); }

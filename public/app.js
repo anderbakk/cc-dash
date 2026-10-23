@@ -39,6 +39,7 @@ const state = {
   roots: {}, // session key -> the folders it works in (cwd first), see folders.js
   filesRoot: {}, // session key -> root id shown under Files
   filesPath: {}, // `${session key}:${root id}` -> current dir
+  filesQuery: {}, // `${session key}:${root id}` -> text searched for under Files
   openRoots: new Set(), // `${session key}:${root id}` of read-only folders expanded under Diff
   preview: null, // { key, root, path }
   previewMax: store.get('previewMax', false), // the preview fills the Files tab
@@ -46,6 +47,9 @@ const state = {
   refsFilter: '',
   terms: new Map(), // managedId -> { term, fit, ws, el, exited }
   lastDiffAt: 0,
+  diffData: null, // { key, roots, diffs }: the last diff fetched, redrawn as comments change
+  comments: store.get('diffComments', {}), // session key -> review comments on its diff
+  draft: null, // the comment being written: { key, root, rootPath, file, from, to, code, text, id? }
 };
 
 // ---- helpers ---------------------------------------------------------------
@@ -898,26 +902,42 @@ async function renderDiff(s, body) {
   const isOpen = (r) => changedIn(r) || state.openRoots.has(`${s.key}:${r.id}`);
   const diffs = await Promise.all(roots.map((r) => (r.git && isOpen(r) ? api(`/api/sessions/${s.key}/diff?root=${r.id}`) : null)));
   if (state.selected !== s.key || state.tab !== 'diff') return;
-  if (roots.length === 1) {
-    body.innerHTML = rootDiffHtml(roots[0], diffs[0]);
-    return;
-  }
+  state.diffData = { key: s.key, roots, diffs };
+  paintDiff(s, body);
+}
+
+// Draws the fetched diff with the review comments in it. Adding or editing a
+// comment redraws from here, without asking git again.
+function paintDiff(s, body = $('#panel-body')) {
+  const dd = state.diffData;
+  if (!dd || dd.key !== s.key || state.tab !== 'diff') return;
+  const { roots, diffs } = dd;
+  const isOpen = (r) => changedIn(r) || state.openRoots.has(`${s.key}:${r.id}`);
+  const placed = new Set(); // comments (and the draft) drawn at their line
   let html = '';
-  roots.forEach((r, i) => {
-    const head = `${esc(r.name)}<span class="root-path">${esc(shortPath(r.path))}</span>`;
-    if (changedIn(r)) html += `<section class="root"><div class="root-head" title="${esc(r.path)}">${head}</div>${rootDiffHtml(r, diffs[i])}</section>`;
-    else {
-      html += `<details class="root" data-root-toggle="${esc(r.id)}"${isOpen(r) ? ' open' : ''}>
-        <summary class="root-head" title="${esc(r.path)}">${head} <span class="muted">${tr('diff.readOnly')}</span></summary>
-        ${isOpen(r) ? rootDiffHtml(r, diffs[i]) : ''}</details>`;
-    }
-  });
-  body.innerHTML = html;
+  if (roots.length === 1) html = rootDiffHtml(s, roots[0], diffs[0], placed);
+  else {
+    roots.forEach((r, i) => {
+      const head = `${esc(r.name)}<span class="root-path">${esc(shortPath(r.path))}</span>`;
+      if (changedIn(r)) html += `<section class="root"><div class="root-head" title="${esc(r.path)}">${head}</div>${rootDiffHtml(s, r, diffs[i], placed)}</section>`;
+      else {
+        html += `<details class="root" data-root-toggle="${esc(r.id)}"${isOpen(r) ? ' open' : ''}>
+          <summary class="root-head" title="${esc(r.path)}">${head} <span class="muted">${tr('diff.readOnly')}</span></summary>
+          ${isOpen(r) ? rootDiffHtml(s, r, diffs[i], placed) : ''}</details>`;
+      }
+    });
+  }
+  body.innerHTML = commentBar(s, placed) + html;
+  const ta = body.querySelector('.dc-edit textarea');
+  if (ta) {
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  }
 }
 
 // data-root tells the click handler which folder the paths inside belong to.
-function rootDiffHtml(r, d) {
-  return `<div data-root="${esc(r.id)}">${r.git ? diffHtml(d) : writtenHtml(r)}</div>`;
+function rootDiffHtml(s, r, d, placed) {
+  return `<div data-root="${esc(r.id)}">${r.git ? diffHtml(s, r, d, placed) : writtenHtml(r)}</div>`;
 }
 
 // A folder without git: the files the session wrote there, newest first.
@@ -930,30 +950,64 @@ function writtenHtml(r) {
   return html;
 }
 
-function diffHtml(d) {
+function diffHtml(s, root, d, placed) {
   if (!d.repo) return `<div class="panel-msg">${tr('diff.notRepo')}</div>`;
   if (!d.files.length) return `<div class="diff-head">⎇ ${esc(d.branch)} · ${tr('diff.noChanges')}</div>`;
   const untracked = d.files.filter((f) => f.status === '??');
   const blocks = d.diff.split(/^(?=diff --git )/m).filter((b) => b.startsWith('diff --git'));
   let html = `<div class="diff-head">⎇ ${esc(d.branch)} · ${tr('diff.changed', d.files.length)}</div>`;
   const toCwd = (f) => (d.prefix ? `${d.prefix}/${f}` : f);
+  const comments = (state.comments[s.key] || []).filter((c) => c.root === root.id);
+  const draft = state.draft?.key === s.key && state.draft.root === root.id ? state.draft : null;
   let lines = 0;
   for (const b of blocks) {
     const m = b.match(/^diff --git a\/(.+?) b\/(.+)$/m);
     const file = m ? m[2] : '?';
+    const path = toCwd(file);
     const f = d.files.find((x) => x.path === file) || {};
+    const here = comments.filter((c) => c.file === path);
+    const draftHere = draft?.file === path ? draft : null;
     const rows = b.split('\n');
     const start = rows.findIndex((r) => r.startsWith('@@'));
     let body = '';
     if (start < 0) body = `<div class="hunk">${tr('diff.binary')}</div>`;
     else {
+      // Line numbers from the hunk headers, old (o) and new (n); a comment
+      // is pinned to the numbers of the line it was written on.
+      let o = 0;
+      let n = 0;
+      let inDraft = false;
       for (const r of rows.slice(start)) {
         if (++lines > 20000) break;
-        const cls = r.startsWith('@@') ? 'hunk' : r.startsWith('+') ? 'add' : r.startsWith('-') ? 'del' : '';
-        body += `<div class="${cls}">${esc(r) || ' '}</div>`;
+        const h = r.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)/);
+        if (h) {
+          o = Number(h[1]);
+          n = Number(h[2]);
+          body += `<div class="hunk">${esc(r)}</div>`;
+          continue;
+        }
+        if (!r) continue; // what follows the last newline
+        if (r.startsWith('\\')) {
+          body += `<div class="hunk">${esc(r)}</div>`; // \ No newline at end of file
+          continue;
+        }
+        const at = r[0] === '+' ? { o: null, n: n++ } : r[0] === '-' ? { o: o++, n: null } : { o: o++, n: n++ };
+        const cls = r[0] === '+' ? 'add' : r[0] === '-' ? 'del' : '';
+        if (draftHere && !draftHere.id && sameLine(draftHere.from, at)) inDraft = true;
+        body += `<div class="${cls}${inDraft ? ' sel' : ''}" data-o="${at.o ?? ''}" data-n="${at.n ?? ''}"><button class="ln" data-dc="line" tabindex="-1" title="${esc(tr('dc.comment'))}">${at.n ?? at.o}</button>${esc(r)}</div>`;
+        for (const c of here) {
+          if (!sameLine(c.to, at)) continue;
+          placed.add(c.id);
+          body += draftHere?.id === c.id ? draftHtml(draftHere) : commentHtml(c);
+        }
+        if (draftHere && !draftHere.id && sameLine(draftHere.to, at)) {
+          inDraft = false;
+          placed.add('draft');
+          body += draftHtml(draftHere);
+        }
       }
     }
-    html += `<details class="diff-file" open><summary>
+    html += `<details class="diff-file" open data-file="${esc(path)}"><summary>
       <span class="st st-${esc(f.status || 'M')}">${esc(f.status || 'M')}</span>
       <span class="grow">${esc(file)}</span>
       <span class="badge"><span class="a">+${f.add ?? 0}</span> <span class="d">−${f.del ?? 0}</span></span>
@@ -968,13 +1022,183 @@ function diffHtml(d) {
   return html;
 }
 
+// ---- panel: review comments on the diff ------------------------------------
+// Click a line number in the diff to comment on it, Shift+click another to
+// cover the lines between. The comments are sent to Claude together, as one
+// message pasted into its prompt, each with the lines it is about.
+
+const sameLine = (a, b) => a.o === b.o && a.n === b.n;
+const lineNo = (a) => a.n ?? a.o;
+
+function commentWhere(c) {
+  const [a, b] = [lineNo(c.from), lineNo(c.to)];
+  return `${c.file}:${a === b ? a : `${a}-${b}`}`;
+}
+
+function commentHtml(c, moved = false) {
+  return `<div class="dc" data-dc-id="${esc(c.id)}">
+    <div class="dc-where">${esc(commentWhere(c))}${moved ? ` <span class="muted">· ${esc(tr('dc.moved'))}</span>` : ''}</div>
+    <div class="dc-text">${esc(c.text)}</div>
+    <div class="dc-actions"><button class="btn small" data-dc="edit">${esc(tr('dc.edit'))}</button><button class="btn small" data-dc="delete">${esc(tr('dc.delete'))}</button></div></div>`;
+}
+
+function draftHtml(d) {
+  return `<div class="dc dc-edit">
+    <div class="dc-where">${esc(commentWhere(d))}</div>
+    <textarea rows="3" placeholder="${esc(tr('dc.placeholder'))}">${esc(d.text)}</textarea>
+    <div class="dc-actions"><span class="muted grow">${esc(tr('dc.hint'))}</span><button class="btn small" data-dc="cancel">${esc(tr('dc.cancel'))}</button><button class="btn small primary" data-dc="save">${esc(tr('dc.save'))}</button></div></div>`;
+}
+
+// Why the comments can't be sent from here right now, or null.
+function cantSend(s) {
+  if (!s.running || !state.terms.get(s.managedId)) return tr('dc.notHere');
+  if (s.state === 'waiting') return tr('dc.busy');
+  return null;
+}
+
+// Above the diff: the count, the buttons, and comments whose line has gone.
+function commentBar(s, placed) {
+  const list = state.comments[s.key] || [];
+  const draft = state.draft?.key === s.key ? state.draft : null;
+  const lost = list.filter((c) => !placed.has(c.id));
+  const lostDraft = draft && !placed.has(draft.id || 'draft');
+  if (!list.length && !lostDraft) return '';
+  const why = cantSend(s);
+  let html = `<div class="dc-bar"><span class="grow">${esc(tr('dc.count', list.length))}</span>
+    <button class="btn small" data-dc="clear">${esc(tr('dc.clear'))}</button>
+    <button class="btn small" data-dc="copy">${esc(tr('dc.copy'))}</button>
+    <button class="btn small primary" data-dc="send" title="${esc(why || tr('dc.sendTitle'))}"${why || !list.length ? ' disabled' : ''}>${esc(tr('dc.send'))}</button></div>`;
+  if (lost.length || lostDraft) {
+    html += '<div class="dc-lost">';
+    for (const c of lost) html += draft?.id === c.id ? draftHtml(draft) : commentHtml(c, true);
+    if (lostDraft && !draft.id) html += draftHtml(draft);
+    html += '</div>';
+  }
+  return html;
+}
+
+// The message for Claude. Paths are as seen from the session's folder;
+// those in its other folders are full paths.
+function commentsPrompt(s) {
+  let text = tr('dc.prompt');
+  const list = [...(state.comments[s.key] || [])].sort((a, b) => a.root.localeCompare(b.root) || a.file.localeCompare(b.file) || lineNo(a.from) - lineNo(b.from));
+  for (const c of list) {
+    const file = c.root === 'main' ? c.file : joinPath(c.rootPath, c.file);
+    const where = commentWhere({ ...c, file });
+    text += `\n\n${where}\n\`\`\`diff\n${c.code.join('\n')}\n\`\`\`\n${c.text}`;
+  }
+  return text;
+}
+
+function joinPath(dir, rel) {
+  const out = dir.replace(/\\/g, '/').split('/');
+  for (const part of rel.split('/')) {
+    if (part === '..') out.pop();
+    else if (part && part !== '.') out.push(part);
+  }
+  return out.join('/');
+}
+
+function saveComments() {
+  store.set('diffComments', Object.fromEntries(Object.entries(state.comments).filter(([, v]) => v.length)));
+}
+
+// Start a comment on a line, or with Shift stretch the one being written to it.
+function commentLine(s, btn, extend) {
+  const row = btn.parentElement;
+  const block = row.closest('.diff-file');
+  const rootEl = row.closest('[data-root]');
+  const rows = [...block.querySelectorAll('.diff-lines > [data-n]')];
+  const at = (el) => ({ o: el.dataset.o ? Number(el.dataset.o) : null, n: el.dataset.n ? Number(el.dataset.n) : null });
+  const d = state.draft;
+  let from = row;
+  let to = row;
+  if (extend && d && !d.id && d.key === s.key && d.root === rootEl.dataset.root && d.file === block.dataset.file) {
+    const first = rows.find((r) => sameLine(at(r), d.from));
+    if (first) [from, to] = rows.indexOf(first) <= rows.indexOf(row) ? [first, row] : [row, first];
+  }
+  const span = rows.slice(rows.indexOf(from), rows.indexOf(to) + 1);
+  const code = span.map((r) => r.textContent.slice(r.querySelector('.ln').textContent.length));
+  const root = (state.roots[s.key] || []).find((r) => r.id === rootEl.dataset.root);
+  state.draft = {
+    key: s.key,
+    root: rootEl.dataset.root,
+    rootPath: root?.path || s.cwd,
+    file: block.dataset.file,
+    from: at(from),
+    to: at(to),
+    code: code.length > 40 ? [...code.slice(0, 40), '…'] : code,
+    text: d && !d.id && d.key === s.key ? d.text : '',
+  };
+  paintDiff(s);
+}
+
+function saveDraft(s) {
+  const d = state.draft;
+  if (!d || d.key !== s.key) return;
+  const text = d.text.trim();
+  const list = (state.comments[s.key] ||= []);
+  const i = list.findIndex((c) => c.id === d.id);
+  if (!text) {
+    if (i >= 0) list.splice(i, 1); // emptied: same as deleting it
+  } else {
+    const { key, ...c } = { ...d, text, id: d.id || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}` };
+    if (i >= 0) list[i] = c;
+    else list.push(c);
+  }
+  state.draft = null;
+  saveComments();
+  paintDiff(s);
+}
+
+function sendComments(s) {
+  if (cantSend(s) || !state.comments[s.key]?.length) return;
+  const t = state.terms.get(s.managedId);
+  // paste() wraps it as a bracketed paste, so the newlines don't submit it;
+  // the Enter that does comes on its own, after Claude has taken the paste.
+  t.term.paste(commentsPrompt(s));
+  setTimeout(() => send(t, { t: 'in', d: '\r' }), 250);
+  state.comments[s.key] = [];
+  state.draft = null;
+  saveComments();
+  paintDiff(s);
+  t.term.focus();
+}
+
+function commentAction(s, b, e) {
+  const act = b.dataset.dc;
+  const id = b.closest('[data-dc-id]')?.dataset.dcId;
+  const list = state.comments[s.key] || [];
+  if (act === 'line') return commentLine(s, b, e.shiftKey);
+  if (act === 'save') return saveDraft(s);
+  if (act === 'cancel') state.draft = null;
+  else if (act === 'edit') {
+    const c = list.find((x) => x.id === id);
+    if (c) state.draft = { ...c, key: s.key };
+  } else if (act === 'delete') {
+    state.comments[s.key] = list.filter((x) => x.id !== id);
+    saveComments();
+  } else if (act === 'clear') {
+    if (!confirm(tr('dc.clearConfirm', list.length))) return;
+    state.comments[s.key] = [];
+    state.draft = null;
+    saveComments();
+  } else if (act === 'copy') {
+    return navigator.clipboard.writeText(commentsPrompt(s)).then(() => {
+      b.textContent = tr('dc.copied');
+      setTimeout(() => (b.textContent = tr('dc.copy')), 1500);
+    });
+  } else if (act === 'send') return sendComments(s);
+  paintDiff(s);
+}
+
 // Files and the preview share a tab: the list on top, or to the left when the
 // panel is wide enough (see .files-split in style.css). Each half redraws on
 // its own, so the preview stays put while you browse folders and vice versa.
 async function renderFiles(s, body) {
   if (!filesPane(s, 'files-split')) {
     body.innerHTML = `<div class="files-split" data-key="${esc(s.key)}" style="--files-list: ${store.get('filesSplit', 35)}%">
-      <div class="files-list"></div><div class="files-gutter" role="separator"></div><div class="files-preview"></div></div>`;
+      <div class="files-list"><div class="files-search"><input type="search" class="files-q" placeholder="${esc(tr('files.search'))}" spellcheck="false"></div><div class="files-entries"></div></div><div class="files-gutter" role="separator"></div><div class="files-preview"></div></div>`;
   }
   await Promise.all([renderFileList(s), renderPreview(s)]);
 }
@@ -982,6 +1206,21 @@ async function renderFiles(s, body) {
 const filesPane = (s, cls) => $(`#panel-body .files-split[data-key="${CSS.escape(s.key)}"]${cls === 'files-split' ? '' : ` .${cls}`}`);
 const onFiles = (s) => state.selected === s.key && state.tab === 'files';
 const rowPath = (row) => row?.dataset.open ?? row?.dataset.dir;
+const SEARCH_MIN = 2; // shorter text lists the folder instead
+
+// A line of a search hit with each match marked.
+function markHits(text, q) {
+  const lower = text.toLowerCase();
+  q = q.toLowerCase();
+  let html = '';
+  let at = 0;
+  for (let i = lower.indexOf(q); i >= 0; i = lower.indexOf(q, at)) {
+    html += `${esc(text.slice(at, i))}<mark>${esc(text.slice(i, i + q.length))}</mark>`;
+    at = i + q.length;
+  }
+  return html + esc(text.slice(at));
+}
+let listSeq = 0;
 
 // `focus`: the path of the row to focus afterwards, or true for the first.
 // Without it, a row that had focus keeps it across the redraw.
@@ -989,9 +1228,14 @@ async function renderFileList(s, focus) {
   const roots = await loadRoots(s);
   const root = roots.find((r) => r.id === state.filesRoot[s.key]) || roots[0];
   const dir = state.filesPath[`${s.key}:${root.id}`] || '';
-  const d = await api(`/api/sessions/${s.key}/files?root=${root.id}&path=${encodeURIComponent(dir)}`);
-  const el = filesPane(s, 'files-list');
-  if (!onFiles(s) || !el) return;
+  const q = (state.filesQuery[`${s.key}:${root.id}`] || '').trim();
+  const searching = q.length >= SEARCH_MIN;
+  const seq = ++listSeq;
+  const d = await api(`/api/sessions/${s.key}/${searching ? 'search' : 'files'}?root=${root.id}&path=${encodeURIComponent(dir)}${searching ? `&q=${encodeURIComponent(q)}` : ''}`);
+  const el = filesPane(s, 'files-entries');
+  if (seq !== listSeq || !onFiles(s) || !el) return;
+  const input = filesPane(s, 'files-q');
+  if (input && document.activeElement !== input) input.value = state.filesQuery[`${s.key}:${root.id}`] || '';
   if (focus == null && el.contains(document.activeElement)) focus = rowPath(document.activeElement.closest('.file-row'));
   const pv = state.preview?.key === s.key && state.preview.root === root.id ? state.preview.path : null;
   const parts = d.path ? d.path.split('/') : [];
@@ -1002,8 +1246,17 @@ async function renderFileList(s, focus) {
     html += `<div class="roots">${roots.map((r) => `<button class="chip${r.id === root.id ? ' active' : ''}" data-pick-root="${esc(r.id)}" title="${esc(r.path)}">${esc(r.name)}${changedIn(r) ? '' : ` <span class="muted">${tr('files.read')}</span>`}</button>`).join('')}</div>`;
   }
   html += `<div data-root="${esc(root.id)}"><div class="crumbs">${crumbs}</div>`;
-  if (d.path) html += `<button class="file-row up" data-dir="${esc(parts.slice(0, -1).join('/'))}"><span class="icon">↑</span><span class="grow">..</span></button>`;
-  for (const e of d.entries) {
+  if (searching) {
+    html += `<div class="crumbs">${crumbs} <span class="muted">· ${tr(d.truncated ? 'files.foundMany' : 'files.found', d.files.length)}</span></div>`;
+    const strip = d.path ? d.path.length + 1 : 0;
+    for (const f of d.files) {
+      html += `<button class="file-row${f.path === pv ? ' active' : ''}" data-open="${esc(f.path)}"><span class="icon"></span><span class="grow">${esc(f.path.slice(strip))}</span><span class="badge">${f.count}</span></button>`;
+      html += f.hits.map((h) => `<div class="hit" data-hit="${esc(f.path)}"><span class="hit-ln">${h.line}</span>${markHits(h.text, q)}</div>`).join('');
+      if (f.count > f.hits.length) html += `<div class="hit muted" data-hit="${esc(f.path)}"><span class="hit-ln"></span>${tr('files.more', f.count - f.hits.length)}</div>`;
+    }
+    if (!d.files.length) html += `<div class="panel-msg">${tr('files.none')}</div>`;
+  } else if (d.path) html += `<button class="file-row up" data-dir="${esc(parts.slice(0, -1).join('/'))}"><span class="icon">↑</span><span class="grow">..</span></button>`;
+  for (const e of searching ? [] : d.entries) {
     const p = d.path ? `${d.path}/${e.name}` : e.name;
     html += e.dir
       ? `<button class="file-row" data-dir="${esc(p)}"><span class="icon">▸</span><span class="grow">${esc(e.name)}/</span></button>`
@@ -1237,7 +1490,53 @@ async function renderPreview(s) {
   });
 }
 
+// The comment being written: keep its text, Ctrl+Enter saves, Esc drops it.
+$('#panel-body').addEventListener('keydown', (e) => {
+  const s = current();
+  if (!e.target.matches('.dc-edit textarea') || !s) return;
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) saveDraft(s);
+  else if (e.key === 'Escape') {
+    state.draft = null;
+    paintDiff(s);
+  } else return;
+  e.preventDefault();
+});
+// The search box above the file list: a pause in typing searches the folder
+// the list shows, ↓/Enter moves into the hits, Esc clears it.
+let searchTimer = null;
+function searchSoon(value) {
+  const s = current();
+  if (!s) return;
+  const root = filesPane(s, 'files-entries')?.querySelector('[data-root]')?.dataset.root || 'main';
+  state.filesQuery[`${s.key}:${root}`] = value;
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => renderFileList(s).catch(() => {}), 250);
+}
+$('#panel-body').addEventListener('keydown', (e) => {
+  if (!e.target.matches('.files-q')) return;
+  const s = current();
+  if (!s) return;
+  if (e.key === 'ArrowDown' || e.key === 'Enter') {
+    const row = e.target.closest('.files-list').querySelector('.files-entries .file-row:not(.up)');
+    row?.focus();
+    if (row?.dataset.open) previewSoon(s, row.closest('[data-root]').dataset.root, row.dataset.open);
+  } else if (e.key === 'Escape' && e.target.value) {
+    e.target.value = '';
+    searchSoon('');
+  } else return;
+  e.preventDefault();
+});
+// Shift+click on a line number stretches the comment; don't select text too.
+$('#panel-body').addEventListener('mousedown', (e) => {
+  if (e.shiftKey && e.target.closest('.ln')) e.preventDefault();
+});
+
 $('#panel-body').addEventListener('input', (e) => {
+  if (e.target.matches('.dc-edit textarea')) {
+    if (state.draft) state.draft.text = e.target.value;
+    return;
+  }
+  if (e.target.matches('.files-q')) return searchSoon(e.target.value);
   if (e.target.id !== 'refs-filter') return;
   state.refsFilter = e.target.value;
   $('#refs-list').innerHTML = renderRefList(state.refs || []);
@@ -1253,6 +1552,8 @@ $('#panel-body').addEventListener('click', (e) => {
     return;
   }
   const s = current();
+  const dc = e.target.closest('[data-dc]');
+  if (dc && s) return commentAction(s, dc, e);
   const step = e.target.closest('[data-step]');
   if (step && s) return stepPreview(s, Number(step.dataset.step));
   const pick = e.target.closest('[data-pick-root]');
@@ -1261,6 +1562,8 @@ $('#panel-body').addEventListener('click', (e) => {
     return renderFileList(s);
   }
   const root = e.target.closest('[data-root]')?.dataset.root || 'main';
+  const hit = e.target.closest('[data-hit]');
+  if (hit && s) return openPreview(s, root, hit.dataset.hit);
   const open = e.target.closest('[data-open]');
   if (open && s) {
     e.preventDefault();
@@ -1294,7 +1597,7 @@ $('#panel-body').addEventListener('keydown', (e) => {
   };
   const i = rows.indexOf(row);
   if (e.key === 'ArrowDown') go(rows[i + 1]);
-  else if (e.key === 'ArrowUp') go(rows[i - 1]);
+  else if (e.key === 'ArrowUp') i ? go(rows[i - 1]) : row.closest('.files-list').querySelector('.files-q')?.focus();
   else if (e.key === 'Home') go(rows[0]);
   else if (e.key === 'End') go(rows.at(-1));
   else if (e.key === 'ArrowRight' && row.dataset.dir != null && !row.classList.contains('up')) openDir(s, root, row.dataset.dir, true);
@@ -1483,9 +1786,13 @@ async function refresh() {
   else renderHead(s);
   if (moved && state.panelOpen) renderPanel();
 
-  // Keep the diff fresh while Claude is working on the selected session.
-  if (state.panelOpen && state.tab === 'diff' && s && (s.lastAt !== prev?.lastAt || s.state !== prev?.state) && Date.now() - state.lastDiffAt > 3000) {
+  // Keep the diff fresh while Claude is working on the selected session, but
+  // not under a comment being written.
+  const writing = state.draft?.key === s?.key;
+  if (state.panelOpen && state.tab === 'diff' && s && !writing && (s.lastAt !== prev?.lastAt || s.state !== prev?.state) && Date.now() - state.lastDiffAt > 3000) {
     renderPanel();
+  } else if (state.panelOpen && state.tab === 'diff' && s && s.state !== prev?.state && state.comments[s.key]?.length) {
+    paintDiff(s); // the Send button depends on the state
   }
   // New messages may have new links.
   if (state.panelOpen && state.tab === 'refs' && s && s.lastAt !== prev?.lastAt) renderPanel();
