@@ -182,8 +182,8 @@ function fakePrs() {
   };
   return p;
 }
-const AZ = 'https://dev.azure.com/poweroffice/PowerOfficeGo/_git';
-const OLD_PR = `${AZ}/PowerOfficeGo/pullrequest/54546`;
+const AZ = 'https://dev.azure.com/org/project/_git';
+const OLD_PR = `${AZ}/app/pullrequest/10`;
 const HOUR = 3600e3;
 
 // Adds a reply to a session's transcript.
@@ -208,14 +208,14 @@ test("a PR is the task's only when it is from the task's branch", async () => {
   const m = fakeManager();
   const prs = fakePrs();
   const fleet = new Fleet(m, { token: 't', pickProfile, prs });
-  const t = await crewTask(fleet, m, 'anderbakk/99539-batch-overlapp');
+  const t = await crewTask(fleet, m, 'task/api-part');
 
   // The story the crew reads links an old PR from another branch and repo:
   // that only makes cc-dash look, and the branch has no PR.
-  crewSays(t.sessionKey, `The story says: see ${OLD_PR} and PR 54546.`);
+  crewSays(t.sessionKey, `The story says: see ${OLD_PR} and PR 10.`);
   await fleet.tick();
   await settle(fleet);
-  assert.deepEqual(prs.looked, ['anderbakk/99539-batch-overlapp']);
+  assert.deepEqual(prs.looked, ['task/api-part']);
   assert.equal(t.pr, null);
   assert.equal(t.phase, 'working');
 
@@ -227,7 +227,7 @@ test("a PR is the task's only when it is from the task's branch", async () => {
   assert.deepEqual(kinds(fleet, t), []);
 
   // The real one is found, with the URL of the repo it is in, and followed.
-  const real = { url: `${AZ}/golog/pullrequest/54700`, state: 'open', createdAt: Date.now(), closedAt: null };
+  const real = { url: `${AZ}/api/pullrequest/12`, state: 'open', createdAt: Date.now(), closedAt: null };
   prs.byBranch[t.branch] = [old, real];
   await fleet.pollPrs();
   assert.deepEqual(t.pr, { url: real.url, state: 'open', by: 'branch' });
@@ -259,14 +259,14 @@ test('a PR taken from a link earlier is dropped, and the real one is still found
   const prs = fakePrs();
   const fleet = new Fleet(m, { token: 't', pickProfile, prs });
   // As fleet.json had it: a PR from a link, with the wrong repo, merged.
-  const t = await crewTask(fleet, m, 'anderbakk/99539-write-grense');
-  Object.assign(t, { pr: { url: `${AZ}/golog/pullrequest/54546`, state: 'merged' }, phase: 'merged' });
+  const t = await crewTask(fleet, m, 'task/app-part');
+  Object.assign(t, { pr: { url: `${AZ}/api/pullrequest/10`, state: 'merged' }, phase: 'merged' });
   await fleet.pollPrs();
   assert.equal(t.pr, null);
   assert.equal(t.phase, 'working');
   assert.deepEqual(kinds(fleet, t), ['pr-dropped']);
 
-  const real = { url: `${AZ}/PowerOfficeGo/pullrequest/54800`, state: 'open', createdAt: Date.now(), closedAt: null };
+  const real = { url: `${AZ}/app/pullrequest/13`, state: 'open', createdAt: Date.now(), closedAt: null };
   prs.byBranch[t.branch] = [real];
   await fleet.pollPrs();
   assert.equal(t.pr.url, real.url);
@@ -279,7 +279,7 @@ test('a PR the skipper clears or sets is not changed by the lookup', async () =>
   const prs = fakePrs();
   const fleet = new Fleet(m, { token: 't', pickProfile, prs });
   const t = await crewTask(fleet, m, 'task/cleared');
-  const wrong = { url: `${AZ}/golog/pullrequest/1`, state: 'open', createdAt: Date.now(), closedAt: null };
+  const wrong = { url: `${AZ}/api/pullrequest/1`, state: 'open', createdAt: Date.now(), closedAt: null };
   prs.byBranch[t.branch] = [wrong];
   await fleet.pollPrs();
   assert.equal(t.pr.url, wrong.url);
@@ -294,7 +294,7 @@ test('a PR the skipper clears or sets is not changed by the lookup', async () =>
   assert.equal(t.phase, 'working');
 
   // But the next PR from the branch is found.
-  const next = { ...wrong, url: `${AZ}/golog/pullrequest/2` };
+  const next = { ...wrong, url: `${AZ}/api/pullrequest/2` };
   prs.byBranch[t.branch] = [wrong, next];
   await fleet.pollPrs();
   assert.equal(t.pr.url, next.url);
@@ -302,7 +302,7 @@ test('a PR the skipper clears or sets is not changed by the lookup', async () =>
   // Set by hand: kept, and only its state is followed. One that was merged
   // before the task began tells nothing.
   const u = await crewTask(fleet, m, 'task/by-hand');
-  const mine = `${AZ}/golog/pullrequest/3`;
+  const mine = `${AZ}/api/pullrequest/3`;
   prs.byBranch[u.branch] = [next];
   prs.byUrl[mine] = { url: mine, state: 'merged', createdAt: u.createdAt - 48 * HOUR, closedAt: u.createdAt - HOUR };
   fleet.update(u.id, { pr: mine, phase: 'pr-open' });
