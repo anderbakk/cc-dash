@@ -4,8 +4,9 @@
 //
 //  - a task is a story or job, with its worktree, branch, crew session and PR
 //  - a watcher polls the crew's hook state, and notices when a crew session
-//    finishes a turn, needs someone, ends, or mentions a new PR
-//  - pull requests are checked with gh / az until they are merged
+//    finishes a turn, needs someone, or ends
+//  - a task's pull request is found by its branch with gh / az, and checked
+//    until it is merged
 //  - events are typed into the skipper's terminal once it is idle and you are
 //    not typing there yourself, so it wakes only when something happened
 //
@@ -18,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { HOST, PORT } from './local.js';
 import { DATA_DIR, IS_WIN, pathKey, safeId } from './paths.js';
-import { repoFor, resolveRefs } from './refs.js';
+import { repoFor } from './refs.js';
 import { allTranscripts, recentMessages, refsFor } from './transcripts.js';
 
 const run = promisify(execFile);
@@ -60,29 +61,81 @@ const git = (cwd, args, timeout = 30e3) =>
 
 // ---- pull requests ---------------------------------------------------------
 
-// Where a PR stands: 'open', 'merged', 'closed', or null when we cannot tell
-// (no gh / az, not logged in, or not a PR URL we know).
-export async function prState(url) {
-  if (typeof url !== 'string') return null;
-  const shell = IS_WIN; // gh and az are .cmd/.exe shims there; the arguments below are validated
+// A task's PR is the one gh / az list with the task's branch as its source, in
+// the task's repo. A PR link in the crew's transcript is not enough: a story
+// or document the crew reads can link any PR, from any repo.
+//
+// A PR is { url, state: 'open' | 'merged' | 'closed', createdAt, closedAt, branch },
+// times in ms or null.
+
+const GH_STATE = { OPEN: 'open', MERGED: 'merged', CLOSED: 'closed' };
+const AZ_STATE = { active: 'open', completed: 'merged', abandoned: 'closed' };
+const time = (s) => (s && Date.parse(s)) || null;
+const GH_FIELDS = 'url,state,createdAt,closedAt,headRefName,isCrossRepository';
+
+// gh and az are .cmd/.exe shims on Windows and need a shell there, which does
+// not quote the arguments: quote them, and refuse anything cmd could read as
+// more than a name.
+const cli = (cmd, args, timeout) => run(cmd, args, { windowsHide: true, timeout, shell: IS_WIN }).then(({ stdout }) => JSON.parse(stdout));
+function arg(s) {
+  if (!/^[\w ./#:@-]+$/.test(s)) throw new Error(`Not passed to a shell: ${s}`);
+  return IS_WIN && /[ #]/.test(s) ? `"${s}"` : s;
+}
+
+const fromGithub = (p) => ({ url: p.url, state: GH_STATE[p.state] || null, createdAt: time(p.createdAt), closedAt: time(p.closedAt), branch: p.headRefName });
+const fromAzure = (p, web) => ({
+  url: `${web}/pullrequest/${p.pullRequestId}`,
+  state: AZ_STATE[p.status] || null,
+  createdAt: time(p.creationDate),
+  closedAt: time(p.closedDate),
+  branch: p.sourceRefName?.replace(/^refs\/heads\//, '') || null,
+});
+
+// The PRs from a branch of a repo (see refs.js), or null when we cannot tell
+// (no gh / az, not logged in, or not a repo we know).
+export async function findPrs(repo, branch) {
+  if (!repo || !validBranch(branch)) return null;
   try {
-    let m = url.match(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/);
-    if (m) {
-      const { stdout } = await run('gh', ['pr', 'view', url, '--json', 'state', '--jq', '.state'], { windowsHide: true, timeout: 30e3, shell });
-      return { OPEN: 'open', MERGED: 'merged', CLOSED: 'closed' }[stdout.trim()] || null;
+    if (repo.host === 'github') {
+      const list = await cli('gh', ['pr', 'list', '--repo', arg(repo.name), '--head', arg(branch), '--state', 'all', '--limit', '20', '--json', GH_FIELDS], 30e3);
+      // --head is the branch name only, so it also matches forks.
+      return list.filter((p) => p.headRefName === branch && !p.isCrossRepository).map(fromGithub);
     }
-    m = url.match(/^https:\/\/dev\.azure\.com\/([\w.-]+)\/[^/\s]+\/_git\/[^/\s]+\/pullrequest\/(\d+)$/i);
-    if (m) {
-      const { stdout } = await run('az', ['repos', 'pr', 'show', '--id', m[2], '--org', `https://dev.azure.com/${m[1]}`, '--query', 'status', '-o', 'tsv'], {
-        windowsHide: true,
-        timeout: 60e3,
-        shell,
-      });
-      return { active: 'open', completed: 'merged', abandoned: 'closed' }[stdout.trim()] || null;
+    if (repo.host === 'azure') {
+      const org = `https://dev.azure.com/${encodeURIComponent(repo.org)}`;
+      const list = await cli(
+        'az',
+        ['repos', 'pr', 'list', '--org', arg(org), '--project', arg(repo.projectName), '--repository', arg(repo.name), '--source-branch', arg(`refs/heads/${branch}`), '--status', 'all', '--top', '20', '-o', 'json'],
+        60e3,
+      );
+      const same = (p) => p.sourceRefName === `refs/heads/${branch}` && (!p.repository?.name || p.repository.name.toLowerCase() === repo.name.toLowerCase());
+      return list.filter(same).map((p) => fromAzure(p, repo.web));
     }
   } catch {}
   return null;
 }
+
+// One PR by its URL, or null when we cannot tell. For a PR the skipper set.
+export async function prInfo(url) {
+  if (typeof url !== 'string') return null;
+  try {
+    if (/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(url)) return { ...fromGithub(await cli('gh', ['pr', 'view', url, '--json', GH_FIELDS], 30e3)), url };
+    const m = url.match(/^https:\/\/dev\.azure\.com\/([\w.-]+)\/[^/\s]+\/_git\/[^/\s]+\/pullrequest\/(\d+)$/i);
+    if (m) return { ...fromAzure(await cli('az', ['repos', 'pr', 'show', '--id', m[2], '--org', `https://dev.azure.com/${m[1]}`, '-o', 'json'], 60e3), ''), url };
+  } catch {}
+  return null;
+}
+
+// Of the PRs from a task's branch, the one that is the task's: not one the
+// skipper cleared, not one that was merged or closed before the task began.
+// An open one first, then the newest.
+export function pickPr(prs, t) {
+  const dropped = new Set(t.prDropped || []);
+  const ok = prs.filter((p) => p.url && p.state && !dropped.has(p.url) && !doneBefore(p, t));
+  return ok.sort((a, b) => (b.state === 'open') - (a.state === 'open') || (b.createdAt || 0) - (a.createdAt || 0))[0] || null;
+}
+
+const doneBefore = (p, t) => p.state !== 'open' && (p.closedAt ?? p.createdAt ?? 0) < t.createdAt;
 
 // ---- worktrees -------------------------------------------------------------
 
@@ -113,16 +166,20 @@ export async function addWorktree(repoDir, { branch, base }) {
 // ---- the fleet -------------------------------------------------------------
 
 export class Fleet {
-  constructor(manager, { token, pickProfile }) {
+  // prs looks PRs up with gh / az: find(folder, branch) and info(url), as
+  // findPrs and prInfo above. Tests give their own.
+  constructor(manager, { token, pickProfile, prs = { find: async (dir, branch) => findPrs(await repoFor(dir), branch), info: prInfo } }) {
     this.manager = manager;
     this.token = token;
     this.pickProfile = pickProfile;
+    this.prs = prs;
+    this.checks = new Map(); // task id -> PR lookup in flight
     this.tasks = new Map();
     this.events = []; // { seq, at, task, kind, text }
     this.seq = 0;
     this.delivered = 0;
     this.skipperSession = null; // the skipper's last Claude session, to continue it
-    this.seen = new Map(); // task id -> { state, prs: Set }
+    this.seen = new Map(); // task id -> { state, turn, prs: Set of PR ref keys }
     this.lastPush = 0;
     this.#load();
   }
@@ -197,7 +254,14 @@ export class Fleet {
     }
     if (story !== undefined) t.story = story || null;
     if (title) t.title = title;
-    if (pr !== undefined) t.pr = pr ? { url: pr, state: t.pr?.url === pr ? t.pr.state : 'open' } : null;
+    if (pr !== undefined) {
+      // A PR the skipper sets stays until it changes it; finding PRs by branch
+      // only follows its state. One it clears or replaces is not taken again,
+      // but another one from the branch is.
+      if (t.pr?.url && t.pr.url !== pr) t.prDropped = [...new Set([...(t.prDropped || []), t.pr.url])];
+      if (pr) t.prDropped = t.prDropped?.filter((u) => u !== pr);
+      t.pr = pr ? { url: pr, state: t.pr?.url === pr ? t.pr.state : 'open', manual: true } : null;
+    }
     if (note) t.notes.push({ at: now(), text: clip(note, 2000) });
     this.#touch(t);
     return this.#view(t);
@@ -365,20 +429,15 @@ export class Fleet {
       }
       seen.state = state;
 
-      // A PR for the task's own repo that shows up in the crew's transcript
-      // (see refs.js) is taken to be the task's. Links to other PRs are not.
+      // The crew mentioning a PR it has not mentioned before is a hint to look
+      // the task's PR up now rather than at the next poll. The PR found is
+      // the one from the task's branch, whatever the link was.
       const key = this.#key(t);
-      const refs = !t.pr && key && refsFor(key);
+      const refs = key && refsFor(key);
       if (refs) {
-        const repo = await repoFor(t.worktree || t.repo);
-        const pr = repo && resolveRefs(refs, repo).find((r) => r.kind === 'pr' && r.url && r.repo === repo.name && r.host === repo.host);
-        if (pr) {
-          t.pr = { url: pr.url, state: 'open' };
-          if (['starting', 'working', 'needs-you', 'review'].includes(t.phase)) t.phase = 'pr-open';
-          // Not for a PR that was already there when the task was tracked.
-          if (!first) this.#event(t, 'pr-opened', `Opened a pull request: ${pr.url}`);
-          this.#touch(t);
-        }
+        const prs = [...refs.values()].filter((r) => r.kind === 'pr').map((r) => r.key);
+        if (prs.some((k) => !seen.prs?.has(k)) && this.#looksForPr(t)) this.checkPr(t.id).catch(() => {});
+        seen.prs = new Set(prs);
       }
       this.seen.set(t.id, seen);
     }
@@ -386,17 +445,65 @@ export class Fleet {
   }
 
   async pollPrs() {
-    for (const t of this.tasks.values()) {
-      if (t.phase === 'closed' || !t.pr?.url || t.pr.state === 'merged') continue;
-      const st = await prState(t.pr.url);
-      if (!st || st === t.pr.state) continue;
-      t.pr.state = st;
-      if (st === 'merged') {
-        t.phase = 'merged';
-        this.#event(t, 'pr-merged', `The pull request was merged: ${t.pr.url}`);
-      } else if (st === 'closed') this.#event(t, 'pr-closed', `The pull request was closed without merging: ${t.pr.url}`);
-      this.#touch(t);
+    for (const t of this.tasks.values()) await this.checkPr(t.id).catch(() => {});
+  }
+
+  // A PR found by branch that is merged is done with. One the skipper set, or
+  // one from before PRs were found by branch, is still checked.
+  #looksForPr(t) {
+    return t.phase !== 'closed' && !(t.pr?.by === 'branch' && t.pr.state === 'merged');
+  }
+
+  // Finds the task's PR, or how the one it has stands, and tells the skipper
+  // what changed. One lookup per task at a time.
+  checkPr(id) {
+    if (!this.checks.has(id)) this.checks.set(id, this.#checkPr(id).finally(() => this.checks.delete(id)));
+    return this.checks.get(id);
+  }
+
+  async #checkPr(id) {
+    const t = this.tasks.get(id);
+    if (!t || !this.#looksForPr(t)) return;
+    let pr;
+    if (t.pr?.manual || !t.branch) {
+      if (!t.pr?.url || t.pr.state === 'merged') return;
+      pr = await this.prs.info(t.pr.url);
+    } else {
+      const found = await this.prs.find(t.worktree || t.repo, t.branch);
+      if (!found) return; // cannot tell
+      pr = pickPr(found, t);
+      if (!pr && t.pr) return this.#dropPr(t);
     }
+    if (pr?.state && t.phase !== 'closed') this.#takePr(t, pr);
+  }
+
+  // The PR the task had is not from its branch: it was taken from a link in
+  // the transcript, before PRs were found by branch. Undo what it did.
+  #dropPr(t) {
+    const url = t.pr.url;
+    t.pr = null;
+    if (['pr-open', 'merged'].includes(t.phase)) t.phase = 'working';
+    this.#event(t, 'pr-dropped', `${url} is not this task's pull request (not from its branch ${t.branch}); cleared it.`);
+    this.#touch(t);
+  }
+
+  #takePr(t, pr) {
+    const old = t.pr?.url === pr.url ? t.pr : null;
+    if (old && old.state === pr.state && (old.manual || old.by)) return;
+    const changed = !old || old.state !== pr.state;
+    t.pr = old?.manual ? { ...old, state: pr.state } : { url: pr.url, state: pr.state, by: 'branch' };
+    // Nothing to tell about a PR that was merged or closed before the task
+    // began, or what is already known about one from before.
+    if (doneBefore(pr, t) || !changed) return this.#touch(t);
+    if (pr.state === 'open') {
+      if (['starting', 'working', 'needs-you', 'review'].includes(t.phase) || (!old && t.phase === 'merged')) t.phase = 'pr-open';
+      // Not for a PR that was already there when the task was tracked.
+      if (!pr.createdAt || pr.createdAt >= t.createdAt) this.#event(t, 'pr-opened', `Opened a pull request: ${pr.url}`);
+    } else if (pr.state === 'merged') {
+      t.phase = 'merged';
+      this.#event(t, 'pr-merged', `The pull request was merged: ${pr.url}`);
+    } else this.#event(t, 'pr-closed', `The pull request was closed without merging: ${pr.url}`);
+    this.#touch(t);
   }
 
   // ---- the skipper ---------------------------------------------------------

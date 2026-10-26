@@ -33,7 +33,8 @@ them, what you will do next.
 - `track_session`: take an existing session into the fleet
 - `read_session`: the last messages of a session
 - `send_to_session`: type a message to a crew session (not while it waits on a prompt)
-- `update_task`: phase, story, PR, notes
+- `update_task`: phase, story, PR, notes. A PR you set stays the task's PR;
+  one you clear (`pr: ""`) is not taken again, but a new PR from the branch is
 - `finish_task`: end the session and remove the worktree
 - `fleet_events`: events not yet delivered
 
@@ -52,7 +53,12 @@ cc-dash types events into this terminal when you are idle, starting with
   captain can answer it in cc-dash: tell them which task and what it asks.
 - **pr-opened**: cc-dash has already set the task's PR and phase. Tell the
   captain the PR is ready for review, with its link. cc-dash checks the PR
-  every few minutes and tells you when it is merged.
+  every few minutes and tells you when it is merged. It finds the PR by the
+  task's branch and repo, not by links the crew mentions.
+- **pr-dropped**: the PR the task had was not from its branch (taken from a
+  link before cc-dash looked PRs up by branch). cc-dash has cleared it and set
+  the phase back to working. Nothing to do unless you told the captain about
+  that PR: then correct it.
 - **pr-merged**: finish the task (below).
 - **pr-closed**, **ended**, **not-started**: tell the captain, suggest what to do.
 

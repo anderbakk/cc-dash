@@ -11,9 +11,9 @@ process.env.CC_DASH_DIR = path.join(dir, 'data');
 process.env.CLAUDE_CONFIG_DIR = path.join(dir, 'claude');
 process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
 
-const { Fleet, addWorktree, slugify, validBranch } = await import('../server/fleet.js');
+const { Fleet, addWorktree, pickPr, slugify, validBranch } = await import('../server/fleet.js');
 const { createMcp } = await import('../server/mcp.js');
-const { tailMessages } = await import('../server/transcripts.js');
+const { scanTranscripts, tailMessages } = await import('../server/transcripts.js');
 
 // Stands in for SessionManager: sessions are plain objects the test changes.
 function fakeManager() {
@@ -166,4 +166,157 @@ test('mcp: auth, initialize, notifications, tools', async () => {
   assert.equal(tracked.title, 'Adopted');
   const tasks = JSON.parse((await call('list_tasks', {})).content[0].text);
   assert.ok(tasks.some((t) => t.id === tracked.id));
+});
+
+// Stands in for gh / az: the PRs of each branch (null: cannot tell), and of each URL.
+function fakePrs() {
+  const p = {
+    byBranch: {},
+    byUrl: {},
+    looked: [],
+    async find(dir, branch) {
+      p.looked.push(branch);
+      return p.byBranch[branch] === undefined ? [] : p.byBranch[branch];
+    },
+    info: async (url) => p.byUrl[url] || null,
+  };
+  return p;
+}
+const AZ = 'https://dev.azure.com/poweroffice/PowerOfficeGo/_git';
+const OLD_PR = `${AZ}/PowerOfficeGo/pullrequest/54546`;
+const HOUR = 3600e3;
+
+// Adds a reply to a session's transcript.
+function crewSays(key, text) {
+  const project = path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', 'p');
+  fs.mkdirSync(project, { recursive: true });
+  const line = { type: 'assistant', timestamp: new Date().toISOString(), message: { content: [{ type: 'text', text }] } };
+  fs.appendFileSync(path.join(project, `${key}.jsonl`), JSON.stringify(line) + '\n');
+  scanTranscripts({ force: true });
+}
+
+async function crewTask(fleet, m, branch) {
+  const t = await fleet.startTask({ repo: dir, title: `Task ${branch}`, brief: 'b', worktree: false });
+  Object.assign(fleet.get(t.id), { branch, brief: null, phase: 'working' });
+  sessionOf(m, t.managedId).state = 'idle';
+  return fleet.get(t.id);
+}
+const settle = (fleet) => Promise.all(fleet.checks.values());
+const kinds = (fleet, t) => fleet.events.filter((e) => e.task === t.id).map((e) => e.kind);
+
+test("a PR is the task's only when it is from the task's branch", async () => {
+  const m = fakeManager();
+  const prs = fakePrs();
+  const fleet = new Fleet(m, { token: 't', pickProfile, prs });
+  const t = await crewTask(fleet, m, 'anderbakk/99539-batch-overlapp');
+
+  // The story the crew reads links an old PR from another branch and repo:
+  // that only makes cc-dash look, and the branch has no PR.
+  crewSays(t.sessionKey, `The story says: see ${OLD_PR} and PR 54546.`);
+  await fleet.tick();
+  await settle(fleet);
+  assert.deepEqual(prs.looked, ['anderbakk/99539-batch-overlapp']);
+  assert.equal(t.pr, null);
+  assert.equal(t.phase, 'working');
+
+  // A PR from the branch that was merged before the task began is not its.
+  const old = { url: OLD_PR, state: 'merged', createdAt: t.createdAt - 72 * HOUR, closedAt: t.createdAt - HOUR };
+  prs.byBranch[t.branch] = [old];
+  await fleet.pollPrs();
+  assert.equal(t.pr, null);
+  assert.deepEqual(kinds(fleet, t), []);
+
+  // The real one is found, with the URL of the repo it is in, and followed.
+  const real = { url: `${AZ}/golog/pullrequest/54700`, state: 'open', createdAt: Date.now(), closedAt: null };
+  prs.byBranch[t.branch] = [old, real];
+  await fleet.pollPrs();
+  assert.deepEqual(t.pr, { url: real.url, state: 'open', by: 'branch' });
+  assert.equal(t.phase, 'pr-open');
+  assert.deepEqual(kinds(fleet, t), ['pr-opened']);
+  await fleet.pollPrs(); // nothing new
+  assert.deepEqual(kinds(fleet, t), ['pr-opened']);
+  prs.byBranch[t.branch] = [old, { ...real, state: 'merged', closedAt: Date.now() }];
+  await fleet.pollPrs();
+  assert.equal(t.phase, 'merged');
+  assert.deepEqual(kinds(fleet, t), ['pr-opened', 'pr-merged']);
+
+  // Merged is done with: no more lookups.
+  const n = prs.looked.length;
+  await fleet.pollPrs();
+  assert.equal(prs.looked.length, n);
+
+  // Without gh / az nothing changes.
+  const u = await crewTask(fleet, m, 'task/no-cli');
+  prs.byBranch[u.branch] = null;
+  Object.assign(u, { pr: { url: real.url, state: 'open', by: 'branch' }, phase: 'pr-open' });
+  await fleet.pollPrs();
+  assert.equal(u.pr.url, real.url);
+  assert.deepEqual(kinds(fleet, u), []);
+});
+
+test('a PR taken from a link earlier is dropped, and the real one is still found', async () => {
+  const m = fakeManager();
+  const prs = fakePrs();
+  const fleet = new Fleet(m, { token: 't', pickProfile, prs });
+  // As fleet.json had it: a PR from a link, with the wrong repo, merged.
+  const t = await crewTask(fleet, m, 'anderbakk/99539-write-grense');
+  Object.assign(t, { pr: { url: `${AZ}/golog/pullrequest/54546`, state: 'merged' }, phase: 'merged' });
+  await fleet.pollPrs();
+  assert.equal(t.pr, null);
+  assert.equal(t.phase, 'working');
+  assert.deepEqual(kinds(fleet, t), ['pr-dropped']);
+
+  const real = { url: `${AZ}/PowerOfficeGo/pullrequest/54800`, state: 'open', createdAt: Date.now(), closedAt: null };
+  prs.byBranch[t.branch] = [real];
+  await fleet.pollPrs();
+  assert.equal(t.pr.url, real.url);
+  assert.equal(t.phase, 'pr-open');
+  assert.deepEqual(kinds(fleet, t), ['pr-dropped', 'pr-opened']);
+});
+
+test('a PR the skipper clears or sets is not changed by the lookup', async () => {
+  const m = fakeManager();
+  const prs = fakePrs();
+  const fleet = new Fleet(m, { token: 't', pickProfile, prs });
+  const t = await crewTask(fleet, m, 'task/cleared');
+  const wrong = { url: `${AZ}/golog/pullrequest/1`, state: 'open', createdAt: Date.now(), closedAt: null };
+  prs.byBranch[t.branch] = [wrong];
+  await fleet.pollPrs();
+  assert.equal(t.pr.url, wrong.url);
+
+  // Cleared: it does not come back, from the branch or from a link.
+  fleet.update(t.id, { pr: '', phase: 'working' });
+  crewSays(t.sessionKey, `Back to ${wrong.url}`);
+  await fleet.tick();
+  await settle(fleet);
+  await fleet.pollPrs();
+  assert.equal(t.pr, null);
+  assert.equal(t.phase, 'working');
+
+  // But the next PR from the branch is found.
+  const next = { ...wrong, url: `${AZ}/golog/pullrequest/2` };
+  prs.byBranch[t.branch] = [wrong, next];
+  await fleet.pollPrs();
+  assert.equal(t.pr.url, next.url);
+
+  // Set by hand: kept, and only its state is followed. One that was merged
+  // before the task began tells nothing.
+  const u = await crewTask(fleet, m, 'task/by-hand');
+  const mine = `${AZ}/golog/pullrequest/3`;
+  prs.byBranch[u.branch] = [next];
+  prs.byUrl[mine] = { url: mine, state: 'merged', createdAt: u.createdAt - 48 * HOUR, closedAt: u.createdAt - HOUR };
+  fleet.update(u.id, { pr: mine, phase: 'pr-open' });
+  await fleet.pollPrs();
+  assert.deepEqual(u.pr, { url: mine, state: 'merged', manual: true });
+  assert.equal(u.phase, 'pr-open');
+  assert.deepEqual(kinds(fleet, u), []);
+});
+
+test('pickPr: open first, then the newest; not one done with before the task', () => {
+  const t = { createdAt: 1000, prDropped: ['d'] };
+  const pr = (url, state, createdAt, closedAt = null) => ({ url, state, createdAt, closedAt });
+  assert.equal(pickPr([pr('a', 'closed', 1100, 1200), pr('b', 'open', 1050)], t).url, 'b');
+  assert.equal(pickPr([pr('a', 'closed', 1100, 1200), pr('c', 'merged', 1300, 1400)], t).url, 'c');
+  assert.equal(pickPr([pr('old', 'merged', 500, 900), pr('d', 'open', 1100)], t), null);
+  assert.equal(pickPr([pr('kept', 'open', 500)], t).url, 'kept'); // tracked with its PR open
 });
