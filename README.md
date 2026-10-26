@@ -140,10 +140,14 @@ You ──► Skipper (Claude + cc-dash MCP tools) ──► crew sessions, one 
   ready. Existing sessions can be taken in with `track_session`. Tasks, with
   their story, branch, PR and phase, are kept in `~/.cc-dash/fleet.json`.
 - **Events cost nothing while nothing happens.** cc-dash watches the crew's
-  hook state and transcripts, and checks open PRs every few minutes with `gh`
-  or `az`. When something happens it types a `[cc-dash] …` message into the
-  skipper's terminal, but only once the skipper is idle and you have not
-  typed there for 20 seconds.
+  hook state and transcripts, and looks up each task's PR every few minutes
+  with `gh` or `az`: the PR whose source branch is the task's branch, in the
+  task's repo. A PR link in the transcript (from a story the crew read, say) is
+  never taken as the task's PR; it only makes cc-dash look sooner. A PR that
+  was merged or closed before the task began is not the task's. A PR the
+  skipper sets or clears with `update_task` is left as it is. When something
+  happens it types a `[cc-dash] …` message into the skipper's terminal, but
+  only once the skipper is idle and you have not typed there for 20 seconds.
 - **Rules.** The skipper does not change code itself, never merges a PR (you
   do), and closes the story (Azure Boards or GitHub issue) and the task once
   the PR is merged. How to document the work comes from each repo's own

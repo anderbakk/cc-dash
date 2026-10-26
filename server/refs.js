@@ -69,6 +69,7 @@ const dec = (s) => {
 // ---- repositories ----------------------------------------------------------
 // A repo is { host, id, name, web, boards }: id is the stable key used to merge
 // mentions, web the repo's browser URL, boards where work items live (Azure).
+// Azure repos also keep org and projectName, for `az --org --project`.
 
 function githubRepo(owner, name) {
   return { host: 'github', id: `github:${owner}/${name}`.toLowerCase(), name: `${owner}/${name}`, web: `https://github.com/${owner}/${name}` };
@@ -82,6 +83,8 @@ function azureRepo(org, project, name) {
     id: `azure:${org}/${project}/${name}`.toLowerCase(),
     project: `azure:${org}/${project}`.toLowerCase(),
     name,
+    org,
+    projectName: project,
     web: `${base}/_git/${encodeURIComponent(name)}`,
     boards: `${base}/_workitems/edit/`,
   };

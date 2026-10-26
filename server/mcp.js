@@ -86,7 +86,7 @@ export const TOOLS = [
         task: str('Task id'),
         phase: { type: 'string', enum: PHASES },
         story: str('User story reference'),
-        pr: str('Pull request URL'),
+        pr: str('Pull request URL. cc-dash finds the PR from the task branch itself; one set here is kept, and "" clears a wrong one for good'),
         title: str('New title'),
         note: str('A note to keep with the task (decisions, what is left)'),
       },
