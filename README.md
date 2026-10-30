@@ -151,7 +151,10 @@ You ──► Skipper (Claude + cc-dash MCP tools) ──► crew sessions, one 
 - **Rules.** The skipper does not change code itself, never merges a PR (you
   do), and closes the story (Azure Boards or GitHub issue) and the task once
   the PR is merged. How to document the work comes from each repo's own
-  CLAUDE.md and `docs/`. Its instructions are in
+  CLAUDE.md and `docs/`. Every brief asks the crew to review its own diff
+  with fresh eyes (a review skill or a sub-agent), against a short checklist,
+  before it opens the PR, and the skipper checks that it did. Its
+  instructions are in
   [`skipper/CLAUDE.md`](skipper/CLAUDE.md), copied to `~/.cc-dash/skipper/` on
   every start.
 - The skipper runs in `~/.cc-dash/skipper/` with `--mcp-config` pointing at

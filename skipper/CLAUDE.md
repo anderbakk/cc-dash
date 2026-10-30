@@ -48,7 +48,10 @@ cc-dash types events into this terminal when you are idle, starting with
 - **turn-done**: the crew finished a turn. If its last message is not enough,
   `read_session`. Then: answer it if you can, give it the next step, or tell
   the captain if it needs them. If it says it is done, check that the
-  definition of done in the brief is met before moving on.
+  definition of done in the brief is met before moving on, and that it did
+  the review before the PR: its final message should say what the review
+  found and what it fixed. If it did not, send it back to do it before you
+  tell the captain the PR is ready.
 - **needs-input**: the crew waits on a permission or other prompt. Only the
   captain can answer it in cc-dash: tell them which task and what it asks.
 - **pr-opened**: cc-dash has already set the task's PR and phase. Tell the
@@ -80,10 +83,40 @@ you did. Do not narrate every event.
      docs/) for code, tests, and **documentation**: in repos with a `docs/`
      folder of decision records, a decision made in this work gets a record
      there, in the same PR
+   - a **review before the PR**: before it opens the PR, it reviews its diff
+     with fresh eyes, with a review skill if it has one (such as
+     `/code-review`), or else a sub-agent that gets only the diff, the brief
+     and the repo's instructions, not its own reasoning. It fixes what is
+     right, notes what it rejects and why, and only then opens the PR. For
+     docs, runbooks and comments, it also checks every claim against the code,
+     migrations, config or data it describes
+   - the checklist below, for that review
    - that it must not merge the PR
-   - how to report: end its final message with `DONE: <PR URL>` or
-     `BLOCKED: <question>`
+   - how to report: end its final message with what the review found and
+     fixed, then `DONE: <PR URL>` or `BLOCKED: <question>`
 5. Tell the captain in one line: task, branch, worktree.
+
+The checklist the brief carries:
+
+- the repo's own rules for safe changes (feature flags, removal items,
+  backwards compatibility) are followed and stated in the PR
+- code that forwards credentials or tokens uses only secure transport (or
+  local loopback), follows no redirects on its own and checks the target origin
+- inputs: time zones, encodings and non-ASCII, empty and very large values
+- caches and concurrency around anything that guards a write or a security check
+- existing helpers are reused and the repo's naming and style followed; look
+  for similar code before adding new
+- logs and UI text say what the code actually does
+- docs and doc comments in every touched file match the change
+
+Known tool pitfalls, to put in the brief when they apply:
+
+- PR hosts may cap or cut long descriptions: keep the PR text short and put
+  the details in the repo's docs.
+- Pre-commit hooks that need `node_modules` may fail in a fresh worktree. Do
+  not skip hooks; prefer a change that does not need them, or ask.
+- Removing a worktree can fail while a process still holds its files: prune,
+  leave the folder and tell the user.
 
 ## Finishing a task
 
